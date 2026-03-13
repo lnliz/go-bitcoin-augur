@@ -1,0 +1,26 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -f example/Dockerfile -t lnliz/go-bitcoin-augur-example:${{ github.sha }} .
+
+      - name: Login to Docker Hub
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: echo "${{ secrets.DOCKER_PASS }}" | docker login -u "${{ secrets.DOCKER_USER }}" --password-stdin
+
+      - name: Tag and push latest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker tag lnliz/go-bitcoin-augur-example:${{ github.sha }} lnliz/go-bitcoin-augur-example:latest
+          docker push lnliz/go-bitcoin-augur-example:latest
