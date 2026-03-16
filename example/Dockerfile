@@ -23,6 +23,6 @@ COPY --from=builder /build/example/augur-example .
 
 ENV BITCOIN_RPC_URL="http://host.docker.internal:8332"
 
-EXPOSE 8080
+EXPOSE 8080 9876
 
 CMD ["./augur-example"]

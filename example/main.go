@@ -26,6 +26,8 @@ func main() {
 
 	mempoolCollector := NewMempoolCollector(bitcoinClient, persist, feeEstimator)
 
+	metricsServer, httpMetrics := SetupMetricsServer(cfg.MetricsAddr, mempoolCollector)
+
 	handler := NewHandler(mempoolCollector, cfg.BaseURL)
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -33,7 +35,7 @@ func main() {
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	server := &http.Server{
 		Addr:    addr,
-		Handler: mux,
+		Handler: httpMetrics.Middleware(mux),
 	}
 
 	go func() {
@@ -41,6 +43,13 @@ func main() {
 		log.Printf("HTTP server started at http://%s/", addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTP server error: %v", err)
+		}
+	}()
+
+	go func() {
+		log.Printf("Starting metrics server on %s", cfg.MetricsAddr)
+		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Metrics server error: %v", err)
 		}
 	}()
 
@@ -54,6 +63,9 @@ func main() {
 	mempoolCollector.Stop()
 	if err := server.Close(); err != nil {
 		log.Printf("Error closing HTTP server: %v", err)
+	}
+	if err := metricsServer.Close(); err != nil {
+		log.Printf("Error closing metrics server: %v", err)
 	}
 	log.Println("Application shutdown completed")
 }

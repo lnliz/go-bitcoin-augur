@@ -28,6 +28,7 @@ type AppConfig struct {
 	BitcoinRpc  BitcoinRpcConfig  `yaml:"bitcoinRpc"`
 	Persistence PersistenceConfig `yaml:"persistence"`
 	BaseURL     string            `yaml:"baseUrl"`
+	MetricsAddr string            `yaml:"metricsAddr"`
 }
 
 func defaultConfig() AppConfig {
@@ -44,6 +45,7 @@ func defaultConfig() AppConfig {
 		Persistence: PersistenceConfig{
 			DataDirectory: "mempool_data",
 		},
+		MetricsAddr: "127.0.0.1:9876",
 	}
 }
 
@@ -73,9 +75,12 @@ func loadConfig() AppConfig {
 	if env := os.Getenv("AUGUR_BASE_URL"); env != "" {
 		config.BaseURL = env
 	}
+	if env := os.Getenv("METRICS_ADDR"); env != "" {
+		config.MetricsAddr = env
+	}
 
-	log.Printf("Loaded configuration: server.port=%d, bitcoinRpc.url=%s, persistence.dataDirectory=%s",
-		config.Server.Port, config.BitcoinRpc.URL, config.Persistence.DataDirectory)
+	log.Printf("Loaded configuration: server.port=%d, bitcoinRpc.url=%s, persistence.dataDirectory=%s, metricsAddr=%s",
+		config.Server.Port, config.BitcoinRpc.URL, config.Persistence.DataDirectory, config.MetricsAddr)
 
 	return config
 }
