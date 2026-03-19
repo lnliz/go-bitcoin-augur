@@ -4,6 +4,7 @@ bitcoin fee estimation library
 
 golang port of [block/bitcoin-augur](https://github.com/block/bitcoin-augur) 
 
+live here: [fees.coinbin.org](https://fees.coinbin.org/)
 
 ### how to use
 
