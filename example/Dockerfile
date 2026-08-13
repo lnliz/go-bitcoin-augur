@@ -13,7 +13,14 @@ WORKDIR /build/example
 RUN go mod download
 RUN CGO_ENABLED=0 GOOS=linux go build -o augur-example .
 
-FROM alpine:3.21
+FROM alpine:3.24
+
+ARG VCS_REF
+ARG BUILD_DATE
+
+LABEL org.opencontainers.image.source="https://github.com/lnliz/go-bitcoin-augur" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}"
 
 RUN apk add --no-cache ca-certificates
 
