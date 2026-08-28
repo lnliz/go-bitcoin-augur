@@ -60,12 +60,10 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleFees(w http.ResponseWriter, r *http.Request) {
-	log.Println("Received request for fee estimates")
 	h.serveFeeEstimate(w, r, false)
 }
 
 func (h *Handler) handleFeesJSON(w http.ResponseWriter, r *http.Request) {
-	log.Println("Received request for fee estimates (JSON)")
 	h.serveFeeEstimate(w, r, true)
 }
 
@@ -78,9 +76,7 @@ func (h *Handler) serveFeeEstimate(w http.ResponseWriter, r *http.Request, withC
 		return
 	}
 
-	log.Println("Transforming fee estimates for response")
 	response := transformFeeEstimate(estimate)
-	log.Printf("Returning fee estimates with %d targets", len(response.Estimates))
 
 	if withCache {
 		w.Header().Set("Cache-Control", "public, max-age=15")
@@ -97,7 +93,6 @@ func (h *Handler) handleFeesTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Received request for fee estimates targeting %.2f blocks", numBlocks)
 	estimate, err := h.mempoolCollector.GetLatestFeeEstimateForBlockTarget(numBlocks)
 	if err != nil {
 		log.Printf("Error getting fee estimate: %v", err)
@@ -111,16 +106,11 @@ func (h *Handler) handleFeesTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Println("Transforming fee estimates for response")
 	response := transformFeeEstimate(estimate)
-	log.Printf("Returning fee estimates with %d targets", len(response.Estimates))
-
 	writeJSON(w, response)
 }
 
 func (h *Handler) handleHistoricalFee(w http.ResponseWriter, r *http.Request) {
-	log.Println("Received request for historical fee estimates")
-
 	timestampParam := r.URL.Query().Get("timestamp")
 	if timestampParam == "" {
 		http.Error(w, "timestamp parameter is required", http.StatusBadRequest)
@@ -134,7 +124,6 @@ func (h *Handler) handleHistoricalFee(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Fetching historical fee estimate for timestamp: %d", timestamp)
 	estimate, err := h.mempoolCollector.GetFeeEstimateForTimestamp(timestamp)
 	if err != nil {
 		log.Printf("Error getting historical fee estimate: %v", err)
@@ -148,10 +137,7 @@ func (h *Handler) handleHistoricalFee(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Println("Transforming historical fee estimates for response")
 	response := transformFeeEstimate(estimate)
-	log.Printf("Returning historical fee estimates with %d targets", len(response.Estimates))
-
 	writeJSON(w, response)
 }
 

@@ -69,15 +69,12 @@ func (c *MempoolCollector) GetFeeEstimateForTimestamp(unixTimestamp int64) (*aug
 	targetTime := time.Unix(unixTimestamp, 0)
 	startTime := targetTime.Add(-24 * time.Hour)
 
-	log.Printf("Fetching snapshots from the last day for timestamp %d", unixTimestamp)
 	snapshots, err := c.persistence.GetSnapshots(startTime, targetTime)
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("Retrieved %d snapshots from the last day", len(snapshots))
 
 	if len(snapshots) > 0 {
-		log.Println("Calculating fee estimates")
 		estimate, err := c.feeEstimator.CalculateEstimates(snapshots)
 		if err != nil {
 			return nil, err
@@ -85,7 +82,6 @@ func (c *MempoolCollector) GetFeeEstimateForTimestamp(unixTimestamp int64) (*aug
 		return &estimate, nil
 	}
 
-	log.Println("No snapshots available for fee estimation")
 	emptyEstimate := augur.FeeEstimate{
 		Estimates: make(map[int]augur.BlockTarget),
 		Timestamp: targetTime,
@@ -97,15 +93,12 @@ func (c *MempoolCollector) GetLatestFeeEstimateForBlockTarget(numOfBlocks float6
 	now := time.Now()
 	startTime := now.Add(-24 * time.Hour)
 
-	log.Println("Fetching snapshots from the last day")
 	snapshots, err := c.persistence.GetSnapshots(startTime, now)
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("Retrieved %d snapshots from the last day", len(snapshots))
 
 	if len(snapshots) > 0 {
-		log.Println("Calculating fee estimates")
 		estimate, err := c.feeEstimator.CalculateEstimatesForBlocks(snapshots, &numOfBlocks)
 		if err != nil {
 			return nil, err
@@ -113,7 +106,6 @@ func (c *MempoolCollector) GetLatestFeeEstimateForBlockTarget(numOfBlocks float6
 		return &estimate, nil
 	}
 
-	log.Println("No snapshots available for fee estimation")
 	emptyEstimate := augur.FeeEstimate{
 		Estimates: make(map[int]augur.BlockTarget),
 		Timestamp: time.Unix(0, 0),
@@ -123,43 +115,35 @@ func (c *MempoolCollector) GetLatestFeeEstimateForBlockTarget(numOfBlocks float6
 
 func (c *MempoolCollector) updateFeeEstimates() {
 	startTime := time.Now()
-	log.Println("Collecting mempool data")
 
 	blockHeight, transactions, err := c.bitcoinClient.GetHeightAndMempoolTransactions()
 	if err != nil {
 		log.Printf("Error fetching mempool data: %v", err)
 		return
 	}
-	log.Printf("Got mempool data: %d transactions at height %d", len(transactions), blockHeight)
 
 	snapshot := augur.NewMempoolSnapshotFromTransactions(transactions, blockHeight, time.Now())
 
 	if err := c.persistence.SaveSnapshot(snapshot); err != nil {
 		log.Printf("Error saving snapshot: %v", err)
-	} else {
-		log.Printf("Mempool snapshot saved: %d transactions at height %d", len(transactions), blockHeight)
 	}
 
 	now := time.Now()
 	dayAgo := now.Add(-24 * time.Hour)
 
-	log.Println("Fetching snapshots from the last day")
 	snapshots, err := c.persistence.GetSnapshots(dayAgo, now)
 	if err != nil {
 		log.Printf("Error fetching snapshots: %v", err)
 		return
 	}
-	log.Printf("Retrieved %d snapshots from the last day", len(snapshots))
 
 	if len(snapshots) > 0 {
-		log.Println("Calculating fee estimates")
 		estimate, err := c.feeEstimator.CalculateEstimates(snapshots)
 		if err != nil {
 			log.Printf("Error calculating fee estimates: %v", err)
 			return
 		}
 		c.latestFeeEstimate.Store(&estimate)
-		log.Println("Fee estimates updated")
 	} else {
 		log.Println("No snapshots available for fee estimation")
 	}

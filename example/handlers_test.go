@@ -11,9 +11,9 @@ import (
 )
 
 type mockCollector struct {
-	latestEstimate    *augur.FeeEstimate
-	historicalErr     error
-	blockTargetErr    error
+	latestEstimate *augur.FeeEstimate
+	historicalErr  error
+	blockTargetErr error
 }
 
 func (m *mockCollector) GetLatestFeeEstimate() *augur.FeeEstimate {

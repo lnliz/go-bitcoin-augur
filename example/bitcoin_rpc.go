@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"net/http"
 
@@ -57,8 +56,6 @@ type mempoolResponse struct {
 }
 
 func (c *BitcoinRpcClient) GetHeightAndMempoolTransactions() (int, []augur.MempoolTransaction, error) {
-	log.Println("Fetching blockchain height and mempool data")
-
 	requests := []rpcRequest{
 		{
 			JSONRPC: "1.0",
@@ -136,6 +133,5 @@ func (c *BitcoinRpcClient) GetHeightAndMempoolTransactions() (int, []augur.Mempo
 		})
 	}
 
-	log.Printf("Fetched blockchain height: %d and %d mempool transactions", height, len(transactions))
 	return height, transactions, nil
 }

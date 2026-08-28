@@ -42,7 +42,6 @@ func (p *MempoolPersistence) SaveSnapshot(snapshot augur.MempoolSnapshot) error 
 	}
 
 	filename := filepath.Join(dateDir, formatSnapshotFilename(snapshot.BlockHeight, snapshot.Timestamp))
-	log.Printf("Saving snapshot to %s", filename)
 
 	sj := snapshotJSON{
 		BlockHeight:     snapshot.BlockHeight,
@@ -62,8 +61,6 @@ func (p *MempoolPersistence) SaveSnapshot(snapshot augur.MempoolSnapshot) error 
 }
 
 func (p *MempoolPersistence) GetSnapshots(startTime, endTime time.Time) ([]augur.MempoolSnapshot, error) {
-	log.Printf("Fetching snapshots from %s to %s", startTime.Format(time.RFC3339), endTime.Format(time.RFC3339))
-
 	var snapshots []augur.MempoolSnapshot
 
 	currentDate := startTime.UTC().Truncate(24 * time.Hour)
@@ -120,8 +117,6 @@ func (p *MempoolPersistence) GetSnapshots(startTime, endTime time.Time) ([]augur
 	sort.Slice(snapshots, func(i, j int) bool {
 		return snapshots[i].Timestamp.Before(snapshots[j].Timestamp)
 	})
-
-	log.Printf("Found %d snapshots in date range", len(snapshots))
 	return snapshots, nil
 }
 
