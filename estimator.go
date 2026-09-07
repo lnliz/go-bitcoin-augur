@@ -135,6 +135,7 @@ func (fe *FeeEstimator) CalculateEstimates(snapshots []MempoolSnapshot) (FeeEsti
 }
 
 // CalculateEstimatesForBlocks calculates a whole-number target in [1, MaxBlockTarget].
+// A target returns the same fees alone or as part of a configured target set.
 // A nil target uses the configured targets. Snapshot timestamps must be distinct;
 // inputs may be unordered and are never modified.
 func (fe *FeeEstimator) CalculateEstimatesForBlocks(snapshots []MempoolSnapshot, numOfBlocks *float64) (FeeEstimate, error) {
@@ -186,18 +187,11 @@ func (fe *FeeEstimator) CalculateEstimatesForBlocks(snapshots []MempoolSnapshot,
 	shortTermInflows := internal.CalculateInflows(bucketSnapshots, fe.shortTermWindowDuration)
 	longTermInflows := internal.CalculateInflows(bucketSnapshots, fe.longTermWindowDuration)
 
-	var calculator *internal.FeeEstimatesCalculator
-	var targets []float64
-
+	targets := fe.blockTargets
 	if numOfBlocks != nil {
-		calculator = internal.NewFeeEstimatesCalculator(fe.probabilities, []float64{*numOfBlocks})
 		targets = []float64{*numOfBlocks}
-	} else {
-		calculator = fe.calculator
-		targets = fe.blockTargets
 	}
-
-	feeMatrix := calculator.GetFeeEstimates(latestMempoolWeights, shortTermInflows, longTermInflows)
+	feeMatrix := fe.calculator.GetFeeEstimatesForTargets(latestMempoolWeights, shortTermInflows, longTermInflows, targets)
 	return fe.convertToFeeEstimate(feeMatrix, ordered[len(ordered)-1].Timestamp, targets), nil
 }
 

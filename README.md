@@ -9,6 +9,7 @@ A Go port of [Block's Augur](https://github.com/block/bitcoin-augur) Bitcoin fee
 - Fixes Poisson tail precision and removes the fixed search cutoff.
 - Separates inflow observations across chain reorganizations.
 - Requires spare block capacity before recommending a lower fee.
+- Returns consistent fees for individual targets and batches.
 - Preserves small inflow changes in large snapshot weights.
 
 The library uses only the Go standard library and performs no network or disk I/O. Go 1.26 or later is required. The separate [example server](example/) collects Bitcoin Core snapshots, persists them, and exposes HTTP endpoints and Prometheus metrics.
@@ -50,7 +51,7 @@ The standard horizons are 3, 6, 9, 12, 18, 24, 36, 48, 72, 96, and 144 ten-minut
 
 Use `WithBlockTargets`, `WithProbabilities`, `WithShortTermWindow`, and `WithLongTermWindow` when constructing an estimator. Configuration is copied, sorted, and deduplicated; changing the supplied slices or exported default lists afterward does not affect estimators.
 
-- Configured targets must be whole numbers from 1 through `MaxBlockTarget` (1008). `CalculateEstimatesForBlocks` accepts a specific target from 1 through 1008, or `nil` for the configured targets. Fractional targets are rejected instead of truncated.
+- Configured targets must be whole numbers from 1 through `MaxBlockTarget` (1008). `CalculateEstimatesForBlocks` accepts a specific target from 1 through 1008, or `nil` for the configured targets. Fractional targets are rejected instead of truncated. A target gives the same fee alone or in a batch.
 - Probabilities must be finite and in `[0, 1]`. Zero requests no confidence and returns the modeled fee floor. One cannot provide a finite-time guarantee and has no available estimate.
 - Windows must satisfy `0 < short-term window <= long-term window`; defaults are 30 minutes and 24 hours.
 - Transactions require positive weights and nonnegative fees. Zero-fee transactions are omitted. Invalid transactions and bucket weight overflow return errors, including overflow when above-range buckets are combined.
@@ -97,4 +98,4 @@ For numerical performance measurements, run `go test ./internal -bench . -benchm
 
 `NewMempoolSnapshotFromTransactions` now returns `(MempoolSnapshot, error)`. Handle its error before storing the snapshot. `FeeEstimatorOption` now applies to a private construction configuration, preventing options from mutating an existing estimator. Invalid configuration and snapshots that previously produced misleading estimates now return errors. Changing exported default slices no longer changes constructor defaults; use options instead.
 
-Calculations intentionally correct several behaviors inherited from or differing from upstream: stable Poisson tails, explicit confidence endpoints, whole-number targets, bounded long-term weighting, preservation of unavailable projections, chronological inflow runs, exact integer inflow differences, positive spare capacity, and inclusion of the highest valid fee bucket. The Go fee floor remains approximately 0.1 sat/vB; the latest Kotlin library also offers configurable fee bounds, which this port does not expose.
+Calculations intentionally correct several behaviors inherited from or differing from upstream: stable Poisson tails, explicit confidence endpoints, whole-number targets, bounded long-term weighting, preservation of unavailable projections, chronological inflow runs, exact integer inflow differences, positive spare capacity, consistent single-target and batch estimates, and inclusion of the highest valid fee bucket. The Go fee floor remains approximately 0.1 sat/vB; the latest Kotlin library also offers configurable fee bounds, which this port does not expose.

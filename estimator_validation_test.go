@@ -175,6 +175,38 @@ func TestSnapshotTipHashSeparatesSameHeightReorg(t *testing.T) {
 	}
 }
 
+func TestEstimateIndependentOfRequestedTargets(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// Historical growth followed by a quiet recent interval makes the raw
+	// blended fee increase with the horizon. The monotonic correction must not
+	// depend on whether a shorter horizon happens to be in the request.
+	history := []MempoolSnapshot{
+		NewEmptyMempoolSnapshot(100, now.Add(-40*time.Minute)),
+		NewEmptyMempoolSnapshot(100, now.Add(-30*time.Minute)),
+		NewEmptyMempoolSnapshot(101, now.Add(-20*time.Minute)),
+		NewEmptyMempoolSnapshot(101, now),
+	}
+	history[1].BucketedWeights[500] = 15_000_000
+	targets := []float64{1, 2, 3, 72, 144, MaxBlockTarget}
+	configured := mustEstimator(t, WithBlockTargets(targets))
+	batch := mustEstimate(t, configured, history)
+	defaultEstimator := mustEstimator(t)
+	for _, target := range targets {
+		single, err := defaultEstimator.CalculateEstimatesForBlocks(history, &target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(single.Estimates) != 1 {
+			t.Fatalf("single target %g returned %d targets", target, len(single.Estimates))
+		}
+		subset := mustEstimate(t, mustEstimator(t, WithBlockTargets([]float64{target})), history)
+		want := batch.Estimates[int(target)]
+		if !reflect.DeepEqual(single.Estimates[int(target)], want) || !reflect.DeepEqual(subset.Estimates[int(target)], want) {
+			t.Fatalf("target %g depends on configured or requested companion targets", target)
+		}
+	}
+}
+
 func TestExactlyFullBlocksRequireHigherFee(t *testing.T) {
 	estimator := mustEstimator(t, WithBlockTargets([]float64{3}), WithProbabilities([]float64{0.5}))
 	snapshot := NewEmptyMempoolSnapshot(100, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))

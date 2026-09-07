@@ -8,72 +8,68 @@ import (
 const BlockSizeWeightUnits = 4_000_000
 
 // FeeEstimatesCalculator combines short- and long-term inflow projections.
-// Its caller validates probabilities and supplies increasing block targets.
+// Its caller validates probabilities and supplies increasing whole-number targets.
 // Bucket arrays contain nonnegative weights ordered from highest fee to lowest.
 type FeeEstimatesCalculator struct {
-	probabilities       []float64
-	blockTargets        []float64
+	probabilities []float64
+	blockTargets  []float64
+	// Cache quantiles through the largest configured target, indexed by horizon.
+	// Larger per-call targets are calculated without mutating shared state.
 	expectedBlocksMined [][]int
 }
 
 func NewFeeEstimatesCalculator(probabilities, blockTargets []float64) *FeeEstimatesCalculator {
-	calc := &FeeEstimatesCalculator{
+	c := &FeeEstimatesCalculator{
 		probabilities: slices.Clone(probabilities),
 		blockTargets:  slices.Clone(blockTargets),
 	}
-	calc.expectedBlocksMined = calc.getExpectedBlocksMined()
-	return calc
+	c.expectedBlocksMined = make([][]int, int(slices.Max(blockTargets))+1)
+	for target := 1; target < len(c.expectedBlocksMined); target++ {
+		c.expectedBlocksMined[target] = c.expectedBlocks(target)
+	}
+	return c
 }
 
-func (c *FeeEstimatesCalculator) GetFeeEstimates(
-	mempoolSnapshot []float64,
-	shortIntervalInflows []float64,
-	longIntervalInflows []float64,
-) [][]*float64 {
-	currentWeightsWithBuffer := make([]float64, len(mempoolSnapshot))
-	for i := range mempoolSnapshot {
-		currentWeightsWithBuffer[i] = mempoolSnapshot[i] + shortIntervalInflows[i]/2
-	}
-
-	shortTermEstimates := c.runSimulations(currentWeightsWithBuffer, shortIntervalInflows)
-	longTermEstimates := c.runSimulations(currentWeightsWithBuffer, longIntervalInflows)
-	weightedEstimates := c.getWeightedEstimates(shortTermEstimates, longTermEstimates)
-
-	// Correct target ordering in bucket space before converting to fee rates.
-	// The extra bucket is an unavailable estimate, never an interpolated fee.
-	for j := range c.probabilities {
-		previous := float64(BucketMax + 1)
-		for i := range weightedEstimates {
-			weightedEstimates[i][j] = math.Min(previous, weightedEstimates[i][j])
-			previous = weightedEstimates[i][j]
-		}
-	}
-
-	result := make([][]*float64, len(weightedEstimates))
-	for i, row := range weightedEstimates {
-		result[i] = make([]*float64, len(row))
-		for j, bucket := range row {
-			if bucket <= BucketMax {
-				fee := math.Exp(bucket / 100)
-				result[i][j] = &fee
-			}
-		}
-	}
-	return result
+func (c *FeeEstimatesCalculator) GetFeeEstimates(mempoolSnapshot, shortInflows, longInflows []float64) [][]*float64 {
+	return c.GetFeeEstimatesForTargets(mempoolSnapshot, shortInflows, longInflows, c.blockTargets)
 }
 
-func (c *FeeEstimatesCalculator) runSimulations(initialWeights, addedWeights []float64) [][]float64 {
-	result := make([][]float64, len(c.blockTargets))
-	for i, target := range c.blockTargets {
-		result[i] = make([]float64, len(c.probabilities))
+// GetFeeEstimatesForTargets uses every whole-number horizon through the largest
+// requested target to enforce monotonicity. The resulting fee for a target is
+// independent of which other targets were requested or configured.
+func (c *FeeEstimatesCalculator) GetFeeEstimatesForTargets(mempoolSnapshot, shortInflows, longInflows, targets []float64) [][]*float64 {
+	initial := make([]float64, len(mempoolSnapshot))
+	for i, weight := range mempoolSnapshot {
+		initial[i] = weight + shortInflows[i]/2
+	}
+	previous := make([]float64, len(c.probabilities))
+	for i := range previous {
+		previous[i] = BucketMax + 1
+	}
+	result := make([][]*float64, len(targets))
+	requested := 0
+	for target := 1; target <= int(targets[len(targets)-1]); target++ {
+		blocks := c.expectedBlocks(target)
 		for j, probability := range c.probabilities {
-			if probability == 0 {
-				// No confirmation confidence is requested, so the floor suffices.
-				result[i][j] = BucketMin
-				continue
+			bucket := float64(BucketMin)
+			if probability != 0 {
+				short := c.runSimulation(initial, shortInflows, blocks[j], float64(target), BlockSizeWeightUnits)
+				long := c.runSimulation(initial, longInflows, blocks[j], float64(target), BlockSizeWeightUnits)
+				bucket = weightedEstimate(float64(short), float64(long), float64(target))
 			}
-			result[i][j] = float64(c.runSimulation(initialWeights, addedWeights,
-				c.expectedBlocksMined[i][j], target, BlockSizeWeightUnits))
+			// A fee sufficient at a shorter horizon remains sufficient when waiting
+			// longer. Always consider the same horizons, regardless of query shape.
+			previous[j] = math.Min(previous[j], bucket)
+		}
+		if target == int(targets[requested]) {
+			result[requested] = make([]*float64, len(c.probabilities))
+			for j, bucket := range previous {
+				if bucket <= BucketMax {
+					fee := math.Exp(bucket / 100)
+					result[requested][j] = &fee
+				}
+			}
+			requested++
 		}
 	}
 	return result
@@ -104,39 +100,27 @@ func (c *FeeEstimatesCalculator) runSimulation(
 	return BucketMin
 }
 
-func (c *FeeEstimatesCalculator) getWeightedEstimates(shortEstimates, longEstimates [][]float64) [][]float64 {
-	result := make([][]float64, len(shortEstimates))
-	for i := range result {
-		// Beyond a day, use the long-term projection exclusively. Extending
-		// the quadratic past 144 would eventually give it a negative weight.
-		target := math.Min(c.blockTargets[i], 144)
-		longWeight := 1 - math.Pow(1-target/144, 2)
-		result[i] = make([]float64, len(shortEstimates[i]))
-		for j, short := range shortEstimates[i] {
-			long := longEstimates[i][j]
-			switch {
-			case longWeight == 1:
-				result[i][j] = long
-			case short > BucketMax || long > BucketMax:
-				// A missing projection has no finite fee to average. Treat it
-				// conservatively until a shorter target supplies a valid rate.
-				result[i][j] = BucketMax + 1
-			default:
-				result[i][j] = short + (long-short)*longWeight
-			}
-		}
+// weightedEstimate blends only available projections. At and beyond one day,
+// the long-term projection alone is used; the quadratic must not extrapolate.
+func weightedEstimate(short, long, target float64) float64 {
+	if target >= 144 {
+		return long
 	}
-	return result
+	if short > BucketMax || long > BucketMax {
+		return BucketMax + 1
+	}
+	longWeight := 1 - math.Pow(1-target/144, 2)
+	return short + (long-short)*longWeight
 }
 
-func (c *FeeEstimatesCalculator) getExpectedBlocksMined() [][]int {
-	blocks := make([][]int, len(c.blockTargets))
-	for i, target := range c.blockTargets {
-		blocks[i] = make([]int, len(c.probabilities))
-		for j, probability := range c.probabilities {
-			if probability > 0 && probability < 1 {
-				blocks[i][j] = poissonBlocks(target, probability)
-			}
+func (c *FeeEstimatesCalculator) expectedBlocks(target int) []int {
+	if target < len(c.expectedBlocksMined) && c.expectedBlocksMined[target] != nil {
+		return c.expectedBlocksMined[target]
+	}
+	blocks := make([]int, len(c.probabilities))
+	for j, probability := range c.probabilities {
+		if probability > 0 && probability < 1 {
+			blocks[j] = poissonBlocks(float64(target), probability)
 		}
 	}
 	return blocks

@@ -100,7 +100,8 @@ func simulateBlocksReference(initial, inflow []float64, blocks int, target, capa
 func TestExpectedBlocksMined(t *testing.T) {
 	calc := NewFeeEstimatesCalculator([]float64{0.5, 0.95}, []float64{3, 12, 144})
 	want := [][]int{{3, 1}, {12, 7}, {144, 125}}
-	for i, row := range calc.expectedBlocksMined {
+	for i, target := range calc.blockTargets {
+		row := calc.expectedBlocksMined[int(target)]
 		if !slices.Equal(row, want[i]) {
 			t.Errorf("target %g: got %v, want %v", calc.blockTargets[i], row, want[i])
 		}
@@ -108,38 +109,34 @@ func TestExpectedBlocksMined(t *testing.T) {
 }
 
 func TestWeightedEstimates(t *testing.T) {
-	calc := NewFeeEstimatesCalculator([]float64{0.5}, []float64{3, 12, 144, 288, 1008})
-	short := [][]float64{{1}, {1}, {1}, {1}, {1}}
-	long := [][]float64{{100}, {100}, {100}, {100}, {100}}
-	want := []float64{5.08203125, 16.8125, 100, 100, 100}
-	got := calc.getWeightedEstimates(short, long)
-	for i, row := range got {
-		if math.Abs(row[0]-want[i]) > 1e-12 {
-			t.Errorf("target %g: got %g, want %g", calc.blockTargets[i], row[0], want[i])
+	for _, tc := range []struct{ target, want float64 }{
+		{3, 5.08203125}, {12, 16.8125}, {144, 100}, {288, 100}, {1008, 100},
+	} {
+		if got := weightedEstimate(1, 100, tc.target); math.Abs(got-tc.want) > 1e-12 {
+			t.Errorf("target %g: got %g, want %g", tc.target, got, tc.want)
 		}
 	}
 }
 
 func TestWeightedEstimatesPreserveMissingProjections(t *testing.T) {
-	calc := NewFeeEstimatesCalculator([]float64{0.5}, []float64{3, 12, 144, 288})
-	short := [][]float64{{BucketMax + 1}, {BucketMin}, {BucketMax + 1}, {BucketMin}}
-	long := [][]float64{{BucketMin}, {BucketMax + 1}, {BucketMin}, {BucketMax + 1}}
-	want := []float64{BucketMax + 1, BucketMax + 1, BucketMin, BucketMax + 1}
-	got := calc.getWeightedEstimates(short, long)
-	for i, row := range got {
-		if row[0] != want[i] {
-			t.Errorf("target %g: got %g, want %g", calc.blockTargets[i], row[0], want[i])
+	for _, tc := range []struct{ target, short, long, want float64 }{
+		{3, BucketMax + 1, BucketMin, BucketMax + 1},
+		{12, BucketMin, BucketMax + 1, BucketMax + 1},
+		{144, BucketMax + 1, BucketMin, BucketMin},
+		{288, BucketMin, BucketMax + 1, BucketMax + 1},
+	} {
+		if got := weightedEstimate(tc.short, tc.long, tc.target); got != tc.want {
+			t.Errorf("target %g: got %g, want %g", tc.target, got, tc.want)
 		}
 	}
 }
 
 func TestWeightedEstimatesPreserveIdenticalBoundaryBuckets(t *testing.T) {
 	for target := 1; target <= 144; target++ {
-		calc := &FeeEstimatesCalculator{blockTargets: []float64{float64(target)}}
-		boundaries := [][]float64{{BucketMin, BucketMax}}
-		got := calc.getWeightedEstimates(boundaries, boundaries)
-		if !slices.Equal(got[0], boundaries[0]) {
-			t.Fatalf("target %d: identical boundaries changed from %v to %v", target, boundaries[0], got[0])
+		for _, bucket := range []float64{BucketMin, BucketMax} {
+			if got := weightedEstimate(bucket, bucket, float64(target)); got != bucket {
+				t.Fatalf("target %d: identical boundary changed from %v to %v", target, bucket, got)
+			}
 		}
 	}
 }
