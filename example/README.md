@@ -72,8 +72,10 @@ The RPC client uses exact BTC-to-satoshi conversion, validates transaction
 weights and fees, and has a 30-second timeout per request. It reads the chain tip,
 then the verbose mempool, then the chain tip again. Observations spanning an
 observed tip change are discarded and retried on the next poll; nodes reporting
-initial block download are rejected. Each snapshot retains the observed block
-hash so the estimator can distinguish successive tips at the same height.
+initial block download are rejected. Observation timestamps use collection start
+time so RPC delays count toward the freshness limit. Each snapshot retains the
+observed block hash so the estimator can distinguish successive tips at the same
+height.
 
 Snapshots are written to UTC date directories through an atomic rename. Existing
 JSON snapshots remain readable; older files without `blockHash` use height-based

@@ -139,7 +139,9 @@ func (c *MempoolCollector) updateFeeEstimates(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	snapshot, err := augur.NewMempoolSnapshotFromTransactions(observation.Transactions, observation.BlockHeight, time.Now())
+	// RPC transport and tip checks may take many seconds. Dating the observation
+	// from the start keeps those delays from making old data appear fresh.
+	snapshot, err := augur.NewMempoolSnapshotFromTransactions(observation.Transactions, observation.BlockHeight, started)
 	if err != nil {
 		return fmt.Errorf("create snapshot: %w", err)
 	}

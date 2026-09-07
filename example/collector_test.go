@@ -108,6 +108,28 @@ func TestCollectorPublishesOnlyAfterSuccessfulPersistence(t *testing.T) {
 	}
 }
 
+func TestCollectorTimestampsBeforeRPC(t *testing.T) {
+	estimator, err := augur.NewFeeEstimator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &testStore{}
+	var rpcStarted time.Time
+	c := NewMempoolCollector(mempoolSourceFunc(func(context.Context) (mempoolObservation, error) {
+		rpcStarted = time.Now()
+		return mempoolObservation{BlockHeight: 800000, BlockHash: "tip"}, nil
+	}), store, estimator)
+	if err := c.updateFeeEstimates(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.snapshots[0].Timestamp.After(rpcStarted) {
+		t.Fatal("RPC delay was excluded from the observation age")
+	}
+	if !c.GetLatestFeeEstimate().Timestamp.Equal(store.snapshots[0].Timestamp) {
+		t.Fatal("published and stored observation timestamps differ")
+	}
+}
+
 func TestCollectorHistoricalFreshness(t *testing.T) {
 	estimator, err := augur.NewFeeEstimator()
 	if err != nil {
