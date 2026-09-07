@@ -17,7 +17,7 @@ Public boundaries reject invalid data; internal routines assume validated inputs
 
 ## Bucketing and observed inflow
 
-A transaction has integer weight `w > 0` in WU and fee `f >= 0` in satoshis. Its model fee rate is `4*f/w`; the logarithmic bucket is `roundToEven(100*ln(rate))`. Transactions above bucket 1000 are folded into that bucket. Zero fees are omitted. Sparse snapshots can retain below-range buckets, but simulation excludes buckets below -230. Invalid transactions and sums that overflow `int64` are errors.
+A transaction has integer weight `w > 0` in WU and fee `f >= 0` in satoshis. Its model fee rate is `4*f/w`; the logarithmic bucket is `roundToEven(100*ln(rate))`. Transactions above bucket 1000 are folded into that bucket. Zero fees are omitted. Sparse snapshots can retain below-range buckets, but simulation excludes buckets below -230. Invalid transactions and sums that overflow `int64`, including folded above-ceiling buckets, are errors.
 
 Inflow uses the first and last observations of each **contiguous run** at the same height and optional tip hash inside the window. Positive bucket deltas are summed and divided by the total observed time, then multiplied by 600 seconds. Intervals that cross a height change are excluded because mined transactions cannot be distinguished from departures. Declines in a bucket do not contribute negative inflow. Returning to a previous height after a reorg starts a new run; it must not merge with the old run.
 

@@ -163,3 +163,24 @@ func TestZeroFeeAndFractionalVirtualSize(t *testing.T) {
 		t.Fatalf("invalid fee rate = %v", got)
 	}
 }
+
+func TestSnapshotRejectsOverflowWhenFoldingHighFeeBuckets(t *testing.T) {
+	for _, weights := range []map[int]int64{
+		{1000: math.MaxInt64, 1001: 1},
+		{1001: math.MaxInt64, math.MaxInt: 1},
+	} {
+		snapshot := NewEmptyMempoolSnapshot(100, time.Now())
+		snapshot.BucketedWeights = weights
+		if err := snapshot.Validate(); err == nil {
+			t.Fatalf("accepted overflowing high fee buckets: %v", weights)
+		}
+		if _, err := mustEstimator(t).CalculateEstimates([]MempoolSnapshot{snapshot}); err == nil {
+			t.Fatalf("estimator accepted overflowing high fee buckets: %v", weights)
+		}
+	}
+	snapshot := NewEmptyMempoolSnapshot(100, time.Now())
+	snapshot.BucketedWeights = map[int]int64{1000: math.MaxInt64 - 1, 1001: 1, 999: math.MaxInt64}
+	if err := snapshot.Validate(); err != nil {
+		t.Fatalf("rejected separate buckets and highest bucket at int64 limit: %v", err)
+	}
+}

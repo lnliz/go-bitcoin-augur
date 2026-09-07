@@ -71,7 +71,8 @@ func NewEmptyMempoolSnapshot(blockHeight int, timestamp time.Time) MempoolSnapsh
 
 // Validate checks snapshot metadata and nonnegative bucket weights. Nil buckets
 // represent an empty mempool. Below-range buckets are ignored by estimation;
-// above-range buckets are folded into the highest modeled bucket.
+// above-range buckets are folded into the highest modeled bucket. Their combined
+// weight, including the highest bucket itself, must fit in int64.
 func (s MempoolSnapshot) Validate() error {
 	if s.BlockHeight < 0 {
 		return errors.New("block height must be nonnegative")
@@ -79,9 +80,16 @@ func (s MempoolSnapshot) Validate() error {
 	if s.Timestamp.IsZero() {
 		return errors.New("snapshot timestamp must not be zero")
 	}
+	var highestBucketWeight int64
 	for bucket, weight := range s.BucketedWeights {
 		if weight < 0 {
 			return fmt.Errorf("bucket %d has negative weight: %d", bucket, weight)
+		}
+		if bucket >= internal.BucketMax {
+			if highestBucketWeight > math.MaxInt64-weight {
+				return errors.New("combined weight in highest modeled bucket overflows int64")
+			}
+			highestBucketWeight += weight
 		}
 	}
 	return nil
