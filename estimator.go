@@ -134,7 +134,7 @@ func (fe *FeeEstimator) CalculateEstimates(snapshots []MempoolSnapshot) (FeeEsti
 	return fe.CalculateEstimatesForBlocks(snapshots, nil)
 }
 
-// CalculateEstimatesForBlocks calculates a whole-number target in [3, MaxBlockTarget].
+// CalculateEstimatesForBlocks calculates a whole-number target in [1, MaxBlockTarget].
 // A nil target uses the configured targets. Snapshot timestamps must be distinct;
 // inputs may be unordered and are never modified.
 func (fe *FeeEstimator) CalculateEstimatesForBlocks(snapshots []MempoolSnapshot, numOfBlocks *float64) (FeeEstimate, error) {
@@ -142,7 +142,7 @@ func (fe *FeeEstimator) CalculateEstimatesForBlocks(snapshots []MempoolSnapshot,
 		return FeeEstimate{}, errors.New("fee estimator must be constructed with NewFeeEstimator")
 	}
 	if numOfBlocks != nil {
-		if err := validateBlockTarget(*numOfBlocks, 3); err != nil {
+		if err := validateBlockTarget(*numOfBlocks, 1); err != nil {
 			return FeeEstimate{}, err
 		}
 	}

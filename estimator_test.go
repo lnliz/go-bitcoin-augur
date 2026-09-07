@@ -265,15 +265,15 @@ func TestGetAvailableBlockTargetsAndConfidenceLevels(t *testing.T) {
 	}
 }
 
-func TestCalculateEstimatesForBlocksThrowsIfLessThan3(t *testing.T) {
+func TestCalculateEstimatesForBlocksRejectsNonpositiveTarget(t *testing.T) {
 	fe := mustEstimator(t)
 	opts := defaultSnapshotSequenceOptions()
 	snapshots := createSnapshotSequence(t, opts)
 
-	numBlocks := 2.0
+	numBlocks := 0.0
 	_, err := fe.CalculateEstimatesForBlocks(snapshots, &numBlocks)
 	if err == nil {
-		t.Error("expected error for numOfBlocks < 3")
+		t.Error("expected error for nonpositive numOfBlocks")
 	}
 }
 

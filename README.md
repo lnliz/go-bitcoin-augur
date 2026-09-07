@@ -50,7 +50,7 @@ The standard horizons are 3, 6, 9, 12, 18, 24, 36, 48, 72, 96, and 144 ten-minut
 
 Use `WithBlockTargets`, `WithProbabilities`, `WithShortTermWindow`, and `WithLongTermWindow` when constructing an estimator. Configuration is copied, sorted, and deduplicated; changing the supplied slices or exported default lists afterward does not affect estimators.
 
-- Configured targets must be whole numbers from 1 through `MaxBlockTarget` (1008). `CalculateEstimatesForBlocks` accepts a specific target from 3 through 1008, or `nil` for the configured targets. Fractional targets are rejected instead of truncated.
+- Configured targets must be whole numbers from 1 through `MaxBlockTarget` (1008). `CalculateEstimatesForBlocks` accepts a specific target from 1 through 1008, or `nil` for the configured targets. Fractional targets are rejected instead of truncated.
 - Probabilities must be finite and in `[0, 1]`. Zero requests no confidence and returns the modeled fee floor. One cannot provide a finite-time guarantee and has no available estimate.
 - Windows must satisfy `0 < short-term window <= long-term window`; defaults are 30 minutes and 24 hours.
 - Transactions require positive weights and nonnegative fees. Zero-fee transactions are omitted. Invalid transactions and bucket weight overflow return errors, including overflow when above-range buckets are combined.

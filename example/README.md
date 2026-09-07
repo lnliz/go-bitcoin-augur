@@ -54,7 +54,7 @@ Standard Go runtime (`go_*`) and process (`process_*`) metrics are also included
 
 All routes accept `GET` (and `HEAD`). `/fees` and `/fees.json` return the latest
 published observation; `/fees.json` permits caching for 15 seconds.
-`/fees/target/{blocks}` accepts whole-number targets from 3 through 1008 and uses
+`/fees/target/{blocks}` accepts whole-number targets from 1 through 1008 and uses
 the same published snapshots. `/historical_fee?timestamp={unix_seconds}` reads
 stored snapshots from the preceding 24 hours; timestamps must be nonnegative
 and no later than now.

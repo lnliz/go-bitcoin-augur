@@ -196,7 +196,7 @@ func TestRoundTo4Decimals(t *testing.T) {
 
 func TestTargetRejectsInvalidNumbers(t *testing.T) {
 	h := NewHandler(&mockCollector{}, "")
-	for _, target := range []string{"NaN", "+Inf", "-Inf", "-1", "0", "2", "3.5", "1009", "1e100"} {
+	for _, target := range []string{"NaN", "+Inf", "-Inf", "-1", "0", "0.5", "3.5", "1009", "1e100"} {
 		t.Run(target, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			h.handleFeesTarget(w, httptest.NewRequest("GET", "/fees/target/"+target, nil))
@@ -204,6 +204,18 @@ func TestTargetRejectsInvalidNumbers(t *testing.T) {
 				t.Errorf("got status %d", w.Code)
 			}
 		})
+	}
+}
+
+func TestTargetAcceptsOneAndTwoBlocks(t *testing.T) {
+	estimate := &augur.FeeEstimate{Estimates: map[int]augur.BlockTarget{1: {Probabilities: map[float64]float64{0.5: 1}}}}
+	h := NewHandler(&mockCollector{latestEstimate: estimate}, "")
+	for _, target := range []string{"1", "2"} {
+		w := httptest.NewRecorder()
+		h.handleFeesTarget(w, httptest.NewRequest("GET", "/fees/target/"+target, nil))
+		if w.Code != http.StatusOK {
+			t.Errorf("target=%s status=%d", target, w.Code)
+		}
 	}
 }
 

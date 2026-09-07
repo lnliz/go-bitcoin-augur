@@ -36,7 +36,7 @@ func TestRejectInvalidConfiguration(t *testing.T) {
 
 func TestCustomTargetValidationBeforeEmptyHistory(t *testing.T) {
 	estimator := mustEstimator(t)
-	for _, target := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), 0, 2, 3.5, MaxBlockTarget + 1} {
+	for _, target := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), 0, -1, 3.5, MaxBlockTarget + 1} {
 		if _, err := estimator.CalculateEstimatesForBlocks(nil, &target); err == nil {
 			t.Errorf("accepted target %v with empty history", target)
 		}

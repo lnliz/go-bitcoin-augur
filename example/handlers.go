@@ -94,9 +94,9 @@ func (h *Handler) serveFeeEstimate(w http.ResponseWriter, r *http.Request, withC
 func (h *Handler) handleFeesTarget(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/fees/target/")
 	numBlocks, err := strconv.ParseFloat(path, 64)
-	if err != nil || math.IsNaN(numBlocks) || math.IsInf(numBlocks, 0) || numBlocks < 3 || numBlocks > augur.MaxBlockTarget || math.Trunc(numBlocks) != numBlocks {
+	if err != nil || math.IsNaN(numBlocks) || math.IsInf(numBlocks, 0) || numBlocks < 1 || numBlocks > augur.MaxBlockTarget || math.Trunc(numBlocks) != numBlocks {
 		log.Println("Invalid or missing num_blocks parameter")
-		writeError(w, fmt.Sprintf("Number of blocks must be an integer between 3 and %d", augur.MaxBlockTarget), http.StatusBadRequest)
+		writeError(w, fmt.Sprintf("Number of blocks must be an integer between 1 and %d", augur.MaxBlockTarget), http.StatusBadRequest)
 		return
 	}
 
