@@ -184,3 +184,28 @@ func TestSnapshotRejectsOverflowWhenFoldingHighFeeBuckets(t *testing.T) {
 		t.Fatalf("rejected separate buckets and highest bucket at int64 limit: %v", err)
 	}
 }
+
+func TestEstimatesPreserveSmallInflowsInLargeSnapshots(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	estimator := mustEstimator(t, WithBlockTargets([]float64{3}), WithProbabilities([]float64{0.95}))
+	var want float64
+	for _, initial := range []int64{0, 1 << 53, math.MaxInt64 - 1} {
+		// Each history observes the same growth, followed by an empty mempool
+		// at a new tip. Its earlier baseline cannot affect the projected inflow.
+		snapshots := []MempoolSnapshot{
+			{Timestamp: base, BlockHeight: 100, BucketedWeights: map[int]int64{100: initial}},
+			{Timestamp: base.Add(100 * time.Nanosecond), BlockHeight: 100, BucketedWeights: map[int]int64{100: initial + 1}},
+			{Timestamp: base.Add(200 * time.Nanosecond), BlockHeight: 101},
+		}
+		estimates := mustEstimate(t, estimator, snapshots)
+		fee, ok := estimates.GetFeeRate(3, 0.95)
+		if !ok {
+			t.Fatalf("initial weight %d: fee unavailable", initial)
+		}
+		if initial == 0 {
+			want = fee
+		} else if fee != want {
+			t.Errorf("initial weight %d: fee = %v, want %v", initial, fee, want)
+		}
+	}
+}

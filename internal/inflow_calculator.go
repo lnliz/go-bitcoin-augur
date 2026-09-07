@@ -36,8 +36,11 @@ func CalculateInflows(snapshots []MempoolSnapshotBuckets, timeframe time.Duratio
 		if seconds > 0 {
 			totalSeconds += seconds
 			for i := range inflows {
+				// Nonnegative int64 endpoints have an exact, representable
+				// difference. Subtract before converting so small changes in
+				// large snapshots are not rounded away.
 				if delta := last.Buckets[i] - first.Buckets[i]; delta > 0 {
-					inflows[i] += delta
+					inflows[i] += float64(delta)
 				}
 			}
 		}

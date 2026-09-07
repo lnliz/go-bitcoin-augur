@@ -23,15 +23,15 @@ func TestFromMempoolSnapshotDropsBucketsBelowMinimum(t *testing.T) {
 
 	validIndex := BucketMax - validBucket
 	if result.Buckets[validIndex] != 600.0 {
-		t.Errorf("expected bucket[%d] = 600, got %f", validIndex, result.Buckets[validIndex])
+		t.Errorf("expected bucket[%d] = 600, got %d", validIndex, result.Buckets[validIndex])
 	}
 
-	totalWeight := 0.0
+	var totalWeight int64
 	for _, w := range result.Buckets {
 		totalWeight += w
 	}
 	if totalWeight != 600.0 {
-		t.Errorf("expected total weight 600, got %f", totalWeight)
+		t.Errorf("expected total weight 600, got %d", totalWeight)
 	}
 
 	if validIndex != len(result.Buckets)-1 {
@@ -56,12 +56,12 @@ func TestFromMempoolSnapshotIgnoresVeryLowFeeRates(t *testing.T) {
 
 	result := NewMempoolSnapshotBuckets(time.Now(), 100, bucketedWeights)
 
-	totalWeight := 0.0
+	var totalWeight int64
 	for _, w := range result.Buckets {
 		totalWeight += w
 	}
 	if totalWeight != 500.0 {
-		t.Errorf("expected total weight 500, got %f", totalWeight)
+		t.Errorf("expected total weight 500, got %d", totalWeight)
 	}
 }
 
@@ -79,11 +79,26 @@ func TestFromMempoolSnapshotPreservesAboveMaximumWeights(t *testing.T) {
 	if got := result.Buckets[BucketArraySize-1]; got != 400 {
 		t.Errorf("lowest bucket weight = %v, want 400", got)
 	}
-	var total float64
+	var total int64
 	for _, weight := range result.Buckets {
 		total += weight
 	}
 	if total != 1000 {
 		t.Errorf("total weight = %v, want 1000", total)
+	}
+}
+
+func TestFromMempoolSnapshotFoldsIntegerWeightsExactly(t *testing.T) {
+	weights := map[int]int64{
+		BucketMax:     1 << 53,
+		BucketMax + 1: 1,
+		math.MaxInt:   math.MaxInt64 - (1 << 53) - 1,
+	}
+	// Map traversal order must not affect folded totals near int64's limit.
+	for range 100 {
+		result := NewMempoolSnapshotBuckets(time.Now(), 100, weights)
+		if got := result.Buckets[0]; got != math.MaxInt64 {
+			t.Fatalf("highest bucket weight = %d, want %d", got, int64(math.MaxInt64))
+		}
 	}
 }

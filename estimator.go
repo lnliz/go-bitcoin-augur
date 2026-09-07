@@ -178,7 +178,11 @@ func (fe *FeeEstimator) CalculateEstimatesForBlocks(snapshots []MempoolSnapshot,
 		bucketSnapshots[i].BlockHash = strings.ToLower(s.BlockHash)
 	}
 
-	latestMempoolWeights := bucketSnapshots[len(bucketSnapshots)-1].Buckets
+	latest := bucketSnapshots[len(bucketSnapshots)-1].Buckets
+	latestMempoolWeights := make([]float64, len(latest))
+	for i, weight := range latest {
+		latestMempoolWeights[i] = float64(weight)
+	}
 	shortTermInflows := internal.CalculateInflows(bucketSnapshots, fe.shortTermWindowDuration)
 	longTermInflows := internal.CalculateInflows(bucketSnapshots, fe.longTermWindowDuration)
 

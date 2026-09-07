@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -23,8 +24,8 @@ func TestCalculateInflowsWithEmptySnapshotList(t *testing.T) {
 func TestCalculateInflowsWithSingleBlockSnapshots(t *testing.T) {
 	now := time.Now()
 
-	buckets1 := make([]float64, BucketArraySize)
-	buckets2 := make([]float64, BucketArraySize)
+	buckets1 := make([]int64, BucketArraySize)
+	buckets2 := make([]int64, BucketArraySize)
 	for i := range buckets1 {
 		buckets1[i] = 1000.0
 		buckets2[i] = 2000.0
@@ -48,9 +49,9 @@ func TestCalculateInflowsWithSingleBlockSnapshots(t *testing.T) {
 func TestCalculateInflowsWithConsistentInflowRate(t *testing.T) {
 	now := time.Now()
 
-	buckets1 := make([]float64, BucketArraySize)
-	buckets2 := make([]float64, BucketArraySize)
-	buckets3 := make([]float64, BucketArraySize)
+	buckets1 := make([]int64, BucketArraySize)
+	buckets2 := make([]int64, BucketArraySize)
+	buckets3 := make([]int64, BucketArraySize)
 	for i := range buckets1 {
 		buckets1[i] = 1_000_000.0
 		buckets2[i] = 2_000_000.0
@@ -79,8 +80,8 @@ func TestCalculateInflowsWithConsistentInflowRate(t *testing.T) {
 func TestCalculateInflowsWithDifferentRatesPerBucket(t *testing.T) {
 	now := time.Now()
 
-	buckets1 := make([]float64, BucketArraySize)
-	buckets2 := make([]float64, BucketArraySize)
+	buckets1 := make([]int64, BucketArraySize)
+	buckets2 := make([]int64, BucketArraySize)
 	buckets1[0] = 1_000_000.0
 	buckets1[1] = 2_000_000.0
 	buckets1[2] = 3_000_000.0
@@ -115,9 +116,9 @@ func TestCalculateInflowsWithDifferentRatesPerBucket(t *testing.T) {
 func TestCalculateInflowsConsidersOnlyFirstAndLastSnapshotPerBlockHeight(t *testing.T) {
 	now := time.Now()
 
-	buckets1 := make([]float64, BucketArraySize)
-	buckets2 := make([]float64, BucketArraySize)
-	buckets3 := make([]float64, BucketArraySize)
+	buckets1 := make([]int64, BucketArraySize)
+	buckets2 := make([]int64, BucketArraySize)
+	buckets3 := make([]int64, BucketArraySize)
 	for i := range buckets1 {
 		buckets1[i] = 1000.0
 		buckets2[i] = 500.0
@@ -143,12 +144,12 @@ func TestCalculateInflowsConsidersOnlyFirstAndLastSnapshotPerBlockHeight(t *test
 func TestCalculateInflowsHandlesMultipleBlockHeights(t *testing.T) {
 	now := time.Now()
 
-	b1 := make([]float64, BucketArraySize)
-	b2 := make([]float64, BucketArraySize)
-	b3 := make([]float64, BucketArraySize)
-	b4 := make([]float64, BucketArraySize)
-	b5 := make([]float64, BucketArraySize)
-	b6 := make([]float64, BucketArraySize)
+	b1 := make([]int64, BucketArraySize)
+	b2 := make([]int64, BucketArraySize)
+	b3 := make([]int64, BucketArraySize)
+	b4 := make([]int64, BucketArraySize)
+	b5 := make([]int64, BucketArraySize)
+	b6 := make([]int64, BucketArraySize)
 	for i := range b1 {
 		b1[i] = 1000.0
 		b2[i] = 500.0
@@ -286,6 +287,24 @@ func TestCalculateInflowsSubsecondIntervals(t *testing.T) {
 	inflows := CalculateInflows(snapshots, time.Minute)
 	if got := inflows[BucketMax]; got != 12000 {
 		t.Fatalf("inflow = %v, want 12000", got)
+	}
+}
+
+func TestCalculateInflowsPreservesSmallIntegerChanges(t *testing.T) {
+	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, initial := range []int64{0, 1 << 53, math.MaxInt64 - 1} {
+		snapshots := []MempoolSnapshotBuckets{
+			NewMempoolSnapshotBuckets(base, 100, map[int]int64{0: initial}),
+			NewMempoolSnapshotBuckets(base.Add(time.Minute), 100, map[int]int64{0: initial + 1}),
+		}
+		if got := CalculateInflows(snapshots, 10*time.Minute)[BucketMax]; got != 10 {
+			t.Errorf("initial weight %d: inflow = %v, want 10", initial, got)
+		}
+		// Declines near the signed integer limit must remain zero inflow.
+		snapshots[1].Buckets[BucketMax] = 0
+		if got := CalculateInflows(snapshots, 10*time.Minute)[BucketMax]; got != 0 {
+			t.Errorf("initial weight %d: decreasing inflow = %v, want 0", initial, got)
+		}
 	}
 }
 
