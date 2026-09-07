@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -97,6 +98,42 @@ func TestHandleFeesWithEstimate(t *testing.T) {
 
 	if len(target3.Probabilities) != 2 {
 		t.Errorf("expected 2 probabilities, got %d", len(target3.Probabilities))
+	}
+}
+
+func TestFeeCacheExpiresWithObservation(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		remaining time.Duration
+		maxAge    int
+	}{
+		{"fresh", maxEstimateAge, 15},
+		{"nearly expired", 6 * time.Second, 5},
+		{"last fraction of a second", 100 * time.Millisecond, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			estimate := &augur.FeeEstimate{
+				Timestamp: time.Now().Add(-maxEstimateAge + tc.remaining),
+				Estimates: map[int]augur.BlockTarget{3: {Probabilities: map[float64]float64{0.5: 1}}},
+			}
+			handler := NewHandler(&mockCollector{latestEstimate: estimate}, "")
+			w := httptest.NewRecorder()
+			handler.handleFeesJSON(w, httptest.NewRequest("GET", "/fees.json", nil))
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d", w.Code)
+			}
+			cache := w.Header().Get("Cache-Control")
+			if tc.maxAge == 0 {
+				if cache != "no-store" {
+					t.Fatalf("cache = %q; expiring data must not be cached", cache)
+				}
+				return
+			}
+			var seconds int
+			if _, err := fmt.Sscanf(cache, "public, max-age=%d, must-revalidate", &seconds); err != nil || seconds <= 0 || seconds > tc.maxAge || !strings.HasSuffix(cache, "must-revalidate") {
+				t.Fatalf("cache = %q; want 1..%d seconds with mandatory revalidation", cache, tc.maxAge)
+			}
+		})
 	}
 }
 

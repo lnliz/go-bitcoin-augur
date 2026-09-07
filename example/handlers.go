@@ -75,6 +75,7 @@ func (h *Handler) handleFeesJSON(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) serveFeeEstimate(w http.ResponseWriter, r *http.Request, withCache bool) {
+	w.Header().Set("Cache-Control", "no-store")
 	estimate := h.mempoolCollector.GetLatestFeeEstimate()
 
 	if estimate == nil || len(estimate.Estimates) == 0 {
@@ -86,7 +87,12 @@ func (h *Handler) serveFeeEstimate(w http.ResponseWriter, r *http.Request, withC
 	response := transformFeeEstimate(estimate)
 
 	if withCache {
-		w.Header().Set("Cache-Control", "public, max-age=15")
+		// A cache must not extend the lifetime of an observation that is already
+		// close to expiring, including when the server becomes unreachable.
+		seconds := min(15, int(time.Until(estimate.Timestamp.Add(maxEstimateAge))/time.Second))
+		if seconds > 0 {
+			w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, must-revalidate", seconds))
+		}
 	}
 	writeJSON(w, response)
 }
