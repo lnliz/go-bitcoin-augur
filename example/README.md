@@ -65,7 +65,7 @@ two minutes without a successful observation, returning HTTP 503 and omitting
 fee gauges from metrics. Historical queries also require an observation within
 two minutes before the requested time. Invalid parameters return 400; storage
 or calculation failures return 500. The page clears its displayed fees when a
-refresh fails.
+refresh fails or takes more than 10 seconds; refresh requests do not overlap.
 
 ### Collection and storage
 

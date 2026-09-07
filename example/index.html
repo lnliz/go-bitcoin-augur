@@ -116,8 +116,10 @@ function formatFee(v) {
 }
 
 async function load() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
   try {
-    const r = await fetch(BASE + "/fees.json");
+    const r = await fetch(BASE + "/fees.json", {signal: controller.signal});
     if (!r.ok) throw new Error(r.status + " " + r.statusText);
     const d = await r.json();
     const tbody = document.getElementById("fees");
@@ -139,11 +141,15 @@ async function load() {
     document.getElementById("status").textContent = "";
     document.getElementById("error").textContent = "Error loading fees: " + e.message;
     document.getElementById("error").style.display = "block";
+  } finally {
+    clearTimeout(timeout);
+    // Only one request may be active: an older response must never overwrite
+    // a newer estimate, and stalled requests must clear the displayed fees.
+    setTimeout(load, 15000);
   }
 }
 
 load();
-setInterval(load, 15000);
 </script>
 </body>
 </html>
