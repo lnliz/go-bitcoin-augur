@@ -39,7 +39,7 @@ Q(k+1) = max(0, Q(k) + B - C)
 Q(n) = max(0, A + n*(B - C))
 ```
 
-The last identity holds because `A >= 0` and `B-C` is constant. Consequently, the first uncleared bucket is the first prefix where initial weight plus `t` intervals of inflow exceeds `n*C`. One scan over the buckets replaces per-block allocations and loops. A deterministic randomized differential test compares this formula to an independent block-by-block reference, including exact-capacity boundaries.
+The last identity holds because `A >= 0` and `B-C` is constant. Consequently, the first prefix without room for a new transaction is the first where initial weight plus `t` intervals of inflow reaches or exceeds `n*C`. Equality matters: an exactly full block has no room for even an infinitesimal candidate. One scan over the buckets replaces per-block allocations and loops. A deterministic randomized differential test compares this threshold to an independent reference that inserts a candidate transaction and mines block by block, including exact-capacity boundaries.
 
 This is a divisible-weight approximation. It does not pack indivisible transactions, reserve space for a particular new transaction, or model ancestor packages, CPFP, replacement policy, block overhead, or miner selection differences. The continuous `weight/4` denominator also differs from rounded Bitcoin Core virtual size for weights not divisible by four.
 
@@ -49,8 +49,8 @@ The long-term weight is `1 - (1 - min(t,144)/144)^2`; the remaining weight goes 
 
 Blend valid estimates in logarithmic bucket space. An unavailable projection with positive weight makes the blend unavailable; its sentinel must never be treated as a fee. As in upstream, fees are then made nonincreasing with increasing targets: a valid shorter-horizon estimate is also usable for a longer horizon. This means adding shorter targets can affect the reported longer-target estimates when this monotonicity correction applies.
 
-Convert with `exp(bucket/100)` and include the highest modeled bucket. A first bucket that remains uncleared is unavailable. Empty modeled demand yields the lowest bucket. Neither result should be interpreted as a guarantee of relay acceptance or confirmation.
+Convert with `exp(bucket/100)` and include the highest modeled bucket. If the highest bucket has no spare capacity, the estimate is unavailable. Empty modeled demand yields the lowest bucket. Neither result should be interpreted as a guarantee of relay acceptance or confirmation.
 
 ## Verification
 
-Regression tests cover malformed inputs, option ownership, target ordering, duplicate times, reorg runs, bucket overflow, extreme Poisson tails, probability endpoints, unavailable projections, fee bounds, concurrent estimator use, integer inflow precision, and independent simulation equivalence. Both modules run race-enabled tests and `go vet` in CI. Example tests use local HTTP servers and temporary directories; they do not require credentials or a Bitcoin node.
+Regression tests cover malformed inputs, option ownership, target ordering, duplicate times, reorg runs, bucket overflow, extreme Poisson tails, probability endpoints, unavailable projections, fee bounds, concurrent estimator use, integer inflow precision, and independent candidate-admission simulation. Both modules run race-enabled tests and `go vet` in CI. Example tests use local HTTP servers and temporary directories; they do not require credentials or a Bitcoin node.

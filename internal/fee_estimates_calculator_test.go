@@ -20,11 +20,15 @@ func TestRunSimulationCapacityBoundaries(t *testing.T) {
 	}{
 		{"no blocks", []float64{0}, []float64{0}, 0, 3, 10, BucketMax + 1},
 		{"empty", []float64{0, 0}, []float64{0, 0}, 3, 3, 10, BucketMin},
-		{"exact capacity", []float64{2, 4}, []float64{2, 6}, 3, 3, 10, BucketMin},
+		{"spare capacity", []float64{2, 3}, []float64{2, 6}, 3, 3, 10, BucketMin},
+		{"exact capacity", []float64{2, 4}, []float64{2, 6}, 3, 3, 10, BucketMax},
+		{"first bucket exactly full", []float64{30, 0}, []float64{0, 0}, 3, 3, 10, BucketMax + 1},
+		{"first bucket full with lower backlog", []float64{30, 1}, []float64{0, 0}, 3, 3, 10, BucketMax + 1},
 		{"first bucket remains", []float64{31, 0}, []float64{0, 0}, 3, 3, 10, BucketMax + 1},
 		{"second bucket remains", []float64{10, 21}, []float64{0, 0}, 3, 3, 10, BucketMax},
-		{"third bucket remains", []float64{10, 20, 1}, []float64{0, 0, 0}, 3, 3, 10, BucketMax - 1},
-		{"constant inflow", []float64{4, 4, 4, 4, 4}, []float64{4, 4, 4, 4, 4}, 2, 2, 12, BucketMax - 1},
+		{"second bucket full with lower backlog", []float64{10, 20, 1}, []float64{0, 0, 0}, 3, 3, 10, BucketMax},
+		{"third bucket remains", []float64{10, 19, 2}, []float64{0, 0, 0}, 3, 3, 10, BucketMax - 1},
+		{"constant inflow", []float64{4, 4, 4, 4, 4}, []float64{4, 4, 4, 4, 4}, 2, 2, 12, BucketMax},
 		{"fractional duration", []float64{0, 0}, []float64{7, 0}, 1, 1.5, 10, BucketMax + 1},
 		{"overflow is congestion", []float64{math.MaxFloat64}, []float64{math.MaxFloat64}, 3, 3, 10, BucketMax + 1},
 	}
@@ -66,24 +70,31 @@ func TestRunSimulationMatchesBlockByBlockReference(t *testing.T) {
 	}
 }
 
-// Deliberately simulate every block independently of the production formula.
+// Deliberately insert a new transaction at each fee position and mine every
+// block independently of the production formula. Inputs have integer per-block
+// weights, so half a WU tests any positive available capacity without affecting
+// the boundary through floating-point rounding.
 func simulateBlocksReference(initial, inflow []float64, blocks int, target, capacity float64) int {
-	weights := slices.Clone(initial)
-	for block := 0; block < blocks; block++ {
-		remainingCapacity := capacity
-		for i := range weights {
-			weights[i] += inflow[i] * target / float64(blocks)
-			mined := math.Min(remainingCapacity, weights[i])
-			weights[i] -= mined
-			remainingCapacity -= mined
+	for candidateIndex := len(initial); candidateIndex > 0; candidateIndex-- {
+		weights := slices.Insert(slices.Clone(initial), candidateIndex, 0.5)
+		arrivals := slices.Insert(slices.Clone(inflow), candidateIndex, 0)
+		for block := 0; block < blocks; block++ {
+			remainingCapacity := capacity
+			for i := range weights {
+				weights[i] += arrivals[i] * target / float64(blocks)
+				mined := math.Min(remainingCapacity, weights[i])
+				weights[i] -= mined
+				remainingCapacity -= mined
+			}
+		}
+		if weights[candidateIndex] == 0 {
+			if candidateIndex == len(initial) {
+				return BucketMin
+			}
+			return BucketMax - candidateIndex + 1
 		}
 	}
-	for i, weight := range weights {
-		if weight > 0 {
-			return BucketMax - i + 1
-		}
-	}
-	return BucketMin
+	return BucketMax + 1
 }
 
 func TestExpectedBlocksMined(t *testing.T) {

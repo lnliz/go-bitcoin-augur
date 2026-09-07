@@ -174,3 +174,22 @@ func TestSnapshotTipHashSeparatesSameHeightReorg(t *testing.T) {
 		t.Fatal("case of a hex tip hash changed estimates")
 	}
 }
+
+func TestExactlyFullBlocksRequireHigherFee(t *testing.T) {
+	estimator := mustEstimator(t, WithBlockTargets([]float64{3}), WithProbabilities([]float64{0.5}))
+	snapshot := NewEmptyMempoolSnapshot(100, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	// Three expected blocks are exactly full with transactions around 100 sat/vB.
+	// A new low-fee transaction has no space, even though no backlog remains.
+	snapshot.BucketedWeights[461] = 12_000_000
+	full := mustEstimate(t, estimator, []MempoolSnapshot{snapshot})
+	rate, ok := full.GetFeeRate(3, 0.5)
+	if !ok || rate <= math.Exp(4.61) {
+		t.Fatalf("full blocks returned insufficient fee: %g, %v", rate, ok)
+	}
+	snapshot.BucketedWeights[461]--
+	spare := mustEstimate(t, estimator, []MempoolSnapshot{snapshot})
+	rate, ok = spare.GetFeeRate(3, 0.5)
+	if !ok || rate != math.Exp(-2.3) {
+		t.Fatalf("positive spare capacity should admit the model's minimum fee: %g, %v", rate, ok)
+	}
+}

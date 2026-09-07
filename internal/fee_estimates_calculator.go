@@ -90,13 +90,14 @@ func (c *FeeEstimatesCalculator) runSimulation(
 
 	// For any prefix of highest-fee buckets, initial weight A and constant
 	// per-block inflow B give remaining weight Q(n) = max(0, A+n*(B-C)),
-	// where C is block capacity. Thus the first uncleared bucket can be found
-	// from total weight and capacity, without allocating or simulating blocks.
+	// where C is block capacity. A new transaction needs positive spare
+	// capacity: a prefix that exactly fills the blocks also requires bidding
+	// above its last bucket. Find that prefix without simulating each block.
 	capacity := float64(expectedBlocks) * blockSize
 	weight := 0.0
 	for i, initial := range initialWeights {
 		weight += initial + addedWeights[i]*meanBlocks
-		if weight > capacity {
+		if weight >= capacity {
 			return BucketMax - i + 1
 		}
 	}
