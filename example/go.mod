@@ -1,6 +1,6 @@
 module github.com/lnliz/go-bitcoin-augur/example
 
-go 1.26
+go 1.27
 
 require github.com/lnliz/go-bitcoin-augur v0.0.0
 

@@ -12,6 +12,10 @@ jobs:
     strategy:
       matrix:
         module: [., example]
+        go-version: ['1.27.x']
+        include:
+          - module: .
+            go-version: '1.26.x'
     defaults:
       run:
         working-directory: ${{ matrix.module }}
@@ -20,7 +24,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: ${{ matrix.go-version }}
 
       - run: go test -race ./...
 
