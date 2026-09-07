@@ -7,7 +7,7 @@ COPY internal/ internal/
 COPY *.go ./
 
 COPY example/go.mod example/go.sum example/
-COPY example/*.go example/
+COPY example/*.go example/index.html example/
 
 WORKDIR /build/example
 RUN go mod download

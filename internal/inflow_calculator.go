@@ -1,68 +1,54 @@
 package internal
 
-import (
-	"sort"
-	"time"
-)
+import "time"
 
+// CalculateInflows estimates net positive bucket growth per ten minutes. The
+// caller supplies validated snapshots in chronological order. Only observations
+// inside timeframe are used; intervals crossing a block-height or hash change are
+// excluded because mining changes the mempool independently of incoming demand.
 func CalculateInflows(snapshots []MempoolSnapshotBuckets, timeframe time.Duration) []float64 {
-	if len(snapshots) == 0 {
-		return make([]float64, BucketArraySize)
-	}
-
-	ordered := make([]MempoolSnapshotBuckets, len(snapshots))
-	copy(ordered, snapshots)
-	sort.Slice(ordered, func(i, j int) bool {
-		return ordered[i].Timestamp.Before(ordered[j].Timestamp)
-	})
-
-	endTime := ordered[len(ordered)-1].Timestamp
-	startTime := endTime.Add(-timeframe)
-
-	var relevant []MempoolSnapshotBuckets
-	for _, s := range ordered {
-		if !s.Timestamp.Before(startTime) && !s.Timestamp.After(endTime) {
-			relevant = append(relevant, s)
-		}
-	}
-
 	inflows := make([]float64, BucketArraySize)
-
-	byBlock := make(map[int][]MempoolSnapshotBuckets)
-	for _, s := range relevant {
-		byBlock[s.BlockHeight] = append(byBlock[s.BlockHeight], s)
+	if len(snapshots) < 2 || timeframe <= 0 {
+		return inflows
 	}
 
-	var totalTimeSpan time.Duration
-	for _, blockSnapshots := range byBlock {
-		if len(blockSnapshots) == 0 {
-			continue
+	startTime := snapshots[len(snapshots)-1].Timestamp.Add(-timeframe)
+	firstRelevant := 0
+	for firstRelevant < len(snapshots) && snapshots[firstRelevant].Timestamp.Before(startTime) {
+		firstRelevant++
+	}
+	snapshots = snapshots[firstRelevant:]
+
+	var totalSeconds float64
+	for start := 0; start < len(snapshots); {
+		end := start + 1
+		for end < len(snapshots) &&
+			snapshots[end].BlockHeight == snapshots[start].BlockHeight &&
+			snapshots[end].BlockHash == snapshots[start].BlockHash {
+			end++
 		}
 
-		sort.Slice(blockSnapshots, func(i, j int) bool {
-			return blockSnapshots[i].Timestamp.Before(blockSnapshots[j].Timestamp)
-		})
-
-		first := blockSnapshots[0]
-		last := blockSnapshots[len(blockSnapshots)-1]
-
-		totalTimeSpan += last.Timestamp.Sub(first.Timestamp)
-
-		for i := 0; i < BucketArraySize; i++ {
-			delta := last.Buckets[i] - first.Buckets[i]
-			if delta > 0 {
-				inflows[i] += delta
+		// Use contiguous runs, rather than grouping all snapshots by height: a
+		// reorganization can return to an earlier height after blocks were mined.
+		// When provided, tip hashes also distinguish replacements at one height.
+		first, last := snapshots[start], snapshots[end-1]
+		seconds := last.Timestamp.Sub(first.Timestamp).Seconds()
+		if seconds > 0 {
+			totalSeconds += seconds
+			for i := range inflows {
+				if delta := last.Buckets[i] - first.Buckets[i]; delta > 0 {
+					inflows[i] += delta
+				}
 			}
 		}
+		start = end
 	}
 
-	if totalTimeSpan > 0 {
-		tenMinutes := 10 * time.Minute
-		normalizationFactor := float64(tenMinutes) / float64(totalTimeSpan)
+	if totalSeconds > 0 {
+		normalizationFactor := (10 * time.Minute).Seconds() / totalSeconds
 		for i := range inflows {
 			inflows[i] *= normalizationFactor
 		}
 	}
-
 	return inflows
 }

@@ -7,8 +7,8 @@ import (
 )
 
 func TestEmptySnapshotListReturnsNilEstimates(t *testing.T) {
-	fe, _ := NewFeeEstimator()
-	estimate, _ := fe.CalculateEstimates(nil)
+	fe := mustEstimator(t)
+	estimate := mustEstimate(t, fe, nil)
 
 	for _, target := range DefaultBlockTargets {
 		for _, prob := range DefaultProbabilities {
@@ -20,12 +20,12 @@ func TestEmptySnapshotListReturnsNilEstimates(t *testing.T) {
 }
 
 func TestSingleSnapshotStillProducesEstimates(t *testing.T) {
-	fe, _ := NewFeeEstimator()
+	fe := mustEstimator(t)
 	opts := defaultSnapshotSequenceOptions()
 	opts.blockCount = 1
-	snapshots := createSnapshotSequence(opts)
+	snapshots := createSnapshotSequence(t, opts)
 
-	estimate, _ := fe.CalculateEstimates(snapshots[:1])
+	estimate := mustEstimate(t, fe, snapshots[:1])
 
 	hasAnyEstimate := false
 	for _, target := range DefaultBlockTargets {
@@ -36,18 +36,18 @@ func TestSingleSnapshotStillProducesEstimates(t *testing.T) {
 		}
 	}
 	if !hasAnyEstimate {
-		t.Log("single snapshot may return estimates based on mempool state")
+		t.Fatal("single snapshot should estimate the existing backlog")
 	}
 }
 
 func TestEstimatesWithConsistentFeeRateIncrease(t *testing.T) {
-	fe, _ := NewFeeEstimator()
+	fe := mustEstimator(t)
 	opts := defaultSnapshotSequenceOptions()
 	opts.blockCount = 144
 	opts.inflowRateChangeTime = time.Hour
-	snapshots := createSnapshotSequence(opts)
+	snapshots := createSnapshotSequence(t, opts)
 
-	estimate, _ := fe.CalculateEstimates(snapshots)
+	estimate := mustEstimate(t, fe, snapshots)
 
 	for _, target := range DefaultBlockTargets {
 		for _, prob := range DefaultProbabilities {
@@ -60,11 +60,11 @@ func TestEstimatesWithConsistentFeeRateIncrease(t *testing.T) {
 }
 
 func TestEstimatesAreOrderedCorrectlyByProbability(t *testing.T) {
-	fe, _ := NewFeeEstimator()
+	fe := mustEstimator(t)
 	opts := defaultSnapshotSequenceOptions()
-	snapshots := createSnapshotSequence(opts)
+	snapshots := createSnapshotSequence(t, opts)
 
-	estimate, _ := fe.CalculateEstimates(snapshots)
+	estimate := mustEstimate(t, fe, snapshots)
 
 	for _, target := range DefaultBlockTargets {
 		var lastFeeRate float64
@@ -81,11 +81,11 @@ func TestEstimatesAreOrderedCorrectlyByProbability(t *testing.T) {
 }
 
 func TestEstimatesAreOrderedCorrectlyByTargetBlocks(t *testing.T) {
-	fe, _ := NewFeeEstimator()
+	fe := mustEstimator(t)
 	opts := defaultSnapshotSequenceOptions()
-	snapshots := createSnapshotSequence(opts)
+	snapshots := createSnapshotSequence(t, opts)
 
-	estimate, _ := fe.CalculateEstimates(snapshots)
+	estimate := mustEstimate(t, fe, snapshots)
 
 	for _, prob := range DefaultProbabilities {
 		lastFeeRate := float64(1 << 62)
@@ -102,14 +102,14 @@ func TestEstimatesAreOrderedCorrectlyByTargetBlocks(t *testing.T) {
 }
 
 func TestEstimatesAreOrderedCorrectlyByTargetBlocksWithHigherLongTermInflows(t *testing.T) {
-	fe, _ := NewFeeEstimator()
+	fe := mustEstimator(t)
 	opts := defaultSnapshotSequenceOptions()
 	opts.blockCount = 144
 	opts.shortTermInflowRates = createVeryLowInflowRates()
 	opts.longTermInflowRates = createHighInflowRates()
-	snapshots := createSnapshotSequence(opts)
+	snapshots := createSnapshotSequence(t, opts)
 
-	estimate, _ := fe.CalculateEstimates(snapshots)
+	estimate := mustEstimate(t, fe, snapshots)
 
 	for _, prob := range DefaultProbabilities {
 		lastFeeRate := float64(1 << 62)
@@ -128,12 +128,12 @@ func TestEstimatesAreOrderedCorrectlyByTargetBlocksWithHigherLongTermInflows(t *
 func TestEstimatesWithCustomProbabilitiesAndTargets(t *testing.T) {
 	customProbs := []float64{0.1, 0.5, 0.9}
 	customTargets := []float64{3.0, 6.0, 12.0}
-	fe, _ := NewFeeEstimator(WithProbabilities(customProbs), WithBlockTargets(customTargets))
+	fe := mustEstimator(t, WithProbabilities(customProbs), WithBlockTargets(customTargets))
 
 	opts := defaultSnapshotSequenceOptions()
-	snapshots := createSnapshotSequence(opts)
+	snapshots := createSnapshotSequence(t, opts)
 
-	estimate, _ := fe.CalculateEstimates(snapshots)
+	estimate := mustEstimate(t, fe, snapshots)
 
 	for _, target := range customTargets {
 		for _, prob := range customProbs {
@@ -146,15 +146,15 @@ func TestEstimatesWithCustomProbabilitiesAndTargets(t *testing.T) {
 }
 
 func TestEstimatesWithUnorderedSnapshots(t *testing.T) {
-	fe, _ := NewFeeEstimator()
+	fe := mustEstimator(t)
 	opts := defaultSnapshotSequenceOptions()
-	snapshots := createSnapshotSequence(opts)
+	snapshots := createSnapshotSequence(t, opts)
 
-	rand.Shuffle(len(snapshots), func(i, j int) {
+	rand.New(rand.NewSource(2)).Shuffle(len(snapshots), func(i, j int) {
 		snapshots[i], snapshots[j] = snapshots[j], snapshots[i]
 	})
 
-	estimate, _ := fe.CalculateEstimates(snapshots)
+	estimate := mustEstimate(t, fe, snapshots)
 
 	for _, target := range DefaultBlockTargets {
 		for _, prob := range DefaultProbabilities {
@@ -169,11 +169,11 @@ func TestEstimatesWithUnorderedSnapshots(t *testing.T) {
 func TestGetNearestBlockTarget(t *testing.T) {
 	customTargets := []float64{3.0, 6.0, 24.0, 144.0}
 	customProbs := []float64{0.5, 0.9}
-	fe, _ := NewFeeEstimator(WithBlockTargets(customTargets), WithProbabilities(customProbs))
+	fe := mustEstimator(t, WithBlockTargets(customTargets), WithProbabilities(customProbs))
 
 	opts := defaultSnapshotSequenceOptions()
-	snapshots := createSnapshotSequence(opts)
-	estimate, _ := fe.CalculateEstimates(snapshots)
+	snapshots := createSnapshotSequence(t, opts)
+	estimate := mustEstimate(t, fe, snapshots)
 
 	for _, target := range customTargets {
 		nearest, ok := estimate.GetNearestBlockTarget(int(target))
@@ -242,11 +242,11 @@ func TestBlockTargetGetFeeRate(t *testing.T) {
 func TestGetAvailableBlockTargetsAndConfidenceLevels(t *testing.T) {
 	targets := []float64{6.0, 3.0, 24.0, 144.0}
 	probs := []float64{0.8, 0.2, 0.5}
-	fe, _ := NewFeeEstimator(WithBlockTargets(targets), WithProbabilities(probs))
+	fe := mustEstimator(t, WithBlockTargets(targets), WithProbabilities(probs))
 
 	opts := defaultSnapshotSequenceOptions()
-	snapshots := createSnapshotSequence(opts)
-	estimate, _ := fe.CalculateEstimates(snapshots)
+	snapshots := createSnapshotSequence(t, opts)
+	estimate := mustEstimate(t, fe, snapshots)
 
 	availableTargets := estimate.GetAvailableBlockTargets()
 	expectedTargets := []int{3, 6, 24, 144}
@@ -266,9 +266,9 @@ func TestGetAvailableBlockTargetsAndConfidenceLevels(t *testing.T) {
 }
 
 func TestCalculateEstimatesForBlocksThrowsIfLessThan3(t *testing.T) {
-	fe, _ := NewFeeEstimator()
+	fe := mustEstimator(t)
 	opts := defaultSnapshotSequenceOptions()
-	snapshots := createSnapshotSequence(opts)
+	snapshots := createSnapshotSequence(t, opts)
 
 	numBlocks := 2.0
 	_, err := fe.CalculateEstimatesForBlocks(snapshots, &numBlocks)
@@ -339,9 +339,9 @@ func TestNewFeeEstimatorValidation(t *testing.T) {
 }
 
 func TestCalculateEstimatesForBlocksWithValidNumOfBlocks(t *testing.T) {
-	fe, _ := NewFeeEstimator()
+	fe := mustEstimator(t)
 	opts := defaultSnapshotSequenceOptions()
-	snapshots := createSnapshotSequence(opts)
+	snapshots := createSnapshotSequence(t, opts)
 
 	numBlocks := 5.0
 	estimate, err := fe.CalculateEstimatesForBlocks(snapshots, &numBlocks)
@@ -372,15 +372,16 @@ func createTransaction(feeRate float64, weight int64) MempoolTransaction {
 
 func createDefaultBaseWeights() map[float64]int64 {
 	weights := make(map[float64]int64)
+	rng := rand.New(rand.NewSource(1))
 
 	for fee := 1; fee <= 8; fee++ {
 		feeRate := float64(fee) * 0.5
-		weights[feeRate] = 500_000 + int64(rand.Float64()*1_500_000)
+		weights[feeRate] = 500_000 + int64(rng.Float64()*1_500_000)
 	}
 
 	for fee := 9; fee <= 32; fee++ {
 		feeRate := float64(fee) * 0.5
-		baseWeight := 2_000_000 + int64(rand.Float64()*5_000_000)
+		baseWeight := 2_000_000 + int64(rng.Float64()*5_000_000)
 		weight := baseWeight
 		switch feeRate {
 		case 5.0:
@@ -399,7 +400,7 @@ func createDefaultBaseWeights() map[float64]int64 {
 
 	for fee := 33; fee <= 64; fee++ {
 		feeRate := float64(fee) * 0.5
-		baseWeight := 1_000_000 + int64(rand.Float64()*3_000_000)
+		baseWeight := 1_000_000 + int64(rng.Float64()*3_000_000)
 		weight := baseWeight
 		switch feeRate {
 		case 20.0:
@@ -487,7 +488,7 @@ type snapshotSequenceOptions struct {
 
 func defaultSnapshotSequenceOptions() snapshotSequenceOptions {
 	return snapshotSequenceOptions{
-		startTime:            time.Now(),
+		startTime:            time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		blockCount:           5,
 		snapshotsPerBlock:    3,
 		baseWeights:          createDefaultBaseWeights(),
@@ -497,7 +498,7 @@ func defaultSnapshotSequenceOptions() snapshotSequenceOptions {
 	}
 }
 
-func createSnapshotSequence(opts snapshotSequenceOptions) []MempoolSnapshot {
+func createSnapshotSequence(t *testing.T, opts snapshotSequenceOptions) []MempoolSnapshot {
 	var snapshots []MempoolSnapshot
 
 	endTime := opts.startTime.Add(time.Duration(600*(opts.blockCount-1)) * time.Second)
@@ -526,9 +527,31 @@ func createSnapshotSequence(opts snapshotSequenceOptions) []MempoolSnapshot {
 				transactions = append(transactions, createTransaction(feeRate, cumulativeWeight))
 			}
 
-			snapshots = append(snapshots, NewMempoolSnapshotFromTransactions(transactions, blockHeight, snapshotTime))
+			snapshot, err := NewMempoolSnapshotFromTransactions(transactions, blockHeight, snapshotTime)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshots = append(snapshots, snapshot)
 		}
 	}
 
 	return snapshots
+}
+
+func mustEstimator(t *testing.T, opts ...FeeEstimatorOption) *FeeEstimator {
+	t.Helper()
+	estimator, err := NewFeeEstimator(opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return estimator
+}
+
+func mustEstimate(t *testing.T, estimator *FeeEstimator, snapshots []MempoolSnapshot) FeeEstimate {
+	t.Helper()
+	estimate, err := estimator.CalculateEstimates(snapshots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return estimate
 }

@@ -1,6 +1,7 @@
 package augur
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -44,7 +45,10 @@ func TestNewMempoolSnapshotFromTransactions(t *testing.T) {
 		{Weight: 1000, Fee: 250},
 	}
 
-	snap := NewMempoolSnapshotFromTransactions(txs, 800000, now)
+	snap, err := NewMempoolSnapshotFromTransactions(txs, 800000, now)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if snap.BlockHeight != 800000 {
 		t.Errorf("BlockHeight = %d, want 800000", snap.BlockHeight)
@@ -72,7 +76,10 @@ func TestNewMempoolSnapshotFromTransactionsSameFeeRate(t *testing.T) {
 		{Weight: 2000, Fee: 500},
 	}
 
-	snap := NewMempoolSnapshotFromTransactions(txs, 1, now)
+	snap, err := NewMempoolSnapshotFromTransactions(txs, 1, now)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var totalWeight int64
 	for _, w := range snap.BucketedWeights {
@@ -84,7 +91,10 @@ func TestNewMempoolSnapshotFromTransactionsSameFeeRate(t *testing.T) {
 }
 
 func TestNewMempoolSnapshotFromTransactionsEmpty(t *testing.T) {
-	snap := NewMempoolSnapshotFromTransactions(nil, 1, time.Now())
+	snap, err := NewMempoolSnapshotFromTransactions(nil, 1, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if snap.BlockHeight != 1 {
 		t.Errorf("BlockHeight = %d, want 1", snap.BlockHeight)
@@ -118,5 +128,38 @@ func TestFeeRateFormula(t *testing.T) {
 	got := tx.FeeRate()
 	if got != expected {
 		t.Errorf("FeeRate() = %f, want %f", got, expected)
+	}
+}
+
+func TestSnapshotConstructorRejectsInvalidInput(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tx := range []MempoolTransaction{{Weight: 0, Fee: 1}, {Weight: -1, Fee: 1}, {Weight: 4, Fee: -1}} {
+		if _, err := NewMempoolSnapshotFromTransactions([]MempoolTransaction{tx}, 1, now); err == nil {
+			t.Errorf("accepted invalid transaction %+v", tx)
+		}
+	}
+	for _, metadata := range []MempoolSnapshot{{BlockHeight: -1, Timestamp: now}, {BlockHeight: 1}} {
+		if _, err := NewMempoolSnapshotFromTransactions(nil, metadata.BlockHeight, metadata.Timestamp); err == nil {
+			t.Error("accepted invalid snapshot metadata")
+		}
+	}
+	// Both entries map to the same positive-rate bucket, and their sum exceeds int64.
+	tx := MempoolTransaction{Weight: math.MaxInt64, Fee: math.MaxInt64}
+	if _, err := NewMempoolSnapshotFromTransactions([]MempoolTransaction{tx, tx}, 1, now); err == nil {
+		t.Error("accepted bucket weight overflow")
+	}
+}
+
+func TestZeroFeeAndFractionalVirtualSize(t *testing.T) {
+	tx := MempoolTransaction{Weight: 401, Fee: 100}
+	if got, want := tx.FeeRate(), 400.0/401; got != want {
+		t.Errorf("continuous weight-based rate = %v, want %v", got, want)
+	}
+	snapshot, err := NewMempoolSnapshotFromTransactions([]MempoolTransaction{{Weight: 400, Fee: 0}}, 1, time.Now())
+	if err != nil || len(snapshot.BucketedWeights) != 0 {
+		t.Fatalf("zero fee snapshot: %+v, %v", snapshot, err)
+	}
+	if got := (MempoolTransaction{Weight: 0, Fee: 1}).FeeRate(); !math.IsNaN(got) {
+		t.Fatalf("invalid fee rate = %v", got)
 	}
 }

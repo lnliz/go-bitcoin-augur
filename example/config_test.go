@@ -39,7 +39,10 @@ func TestLoadConfigEnvOverrides(t *testing.T) {
 		os.Unsetenv("AUGUR_DATA_DIR")
 	}()
 
-	cfg := loadConfig()
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if cfg.Server.Host != "127.0.0.1" {
 		t.Errorf("expected host 127.0.0.1, got %s", cfg.Server.Host)
@@ -82,7 +85,10 @@ persistence:
 	os.Setenv("AUGUR_CONFIG_FILE", configPath)
 	defer os.Unsetenv("AUGUR_CONFIG_FILE")
 
-	cfg := loadConfig()
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if cfg.Server.Host != "192.168.1.1" {
 		t.Errorf("expected host 192.168.1.1, got %s", cfg.Server.Host)
@@ -92,5 +98,63 @@ persistence:
 	}
 	if cfg.BitcoinRpc.URL != "http://bitcoin:8332" {
 		t.Errorf("expected URL http://bitcoin:8332, got %s", cfg.BitcoinRpc.URL)
+	}
+}
+
+func TestPartialConfigKeepsDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("server:\n  port: 9999\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AUGUR_CONFIG_FILE", path)
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.Port != 9999 || cfg.BitcoinRpc.URL != defaultConfig().BitcoinRpc.URL || cfg.MetricsAddr != defaultConfig().MetricsAddr || cfg.Persistence.DataDirectory != defaultConfig().Persistence.DataDirectory {
+		t.Fatalf("lost defaults: %+v", cfg)
+	}
+}
+
+func TestInvalidConfigFails(t *testing.T) {
+	for _, content := range []string{"server:\n  prt: 99\n", "server:\n  port: 0\n", "bitcoinRpc:\n  url: file:///tmp/rpc\n", "metricsAddr: invalid\n", "metricsAddr: localhost:99999\n", "persistence:\n  dataDirectory: ''\n", "baseUrl: javascript:alert(1)\n", "server: [", "server: {}\n---\nserver: {}\n"} {
+		t.Run(content, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("AUGUR_CONFIG_FILE", path)
+			if _, err := loadConfig(); err == nil {
+				t.Fatal("accepted invalid configuration")
+			}
+		})
+	}
+	t.Run("missing file", func(t *testing.T) {
+		t.Setenv("AUGUR_CONFIG_FILE", filepath.Join(t.TempDir(), "missing"))
+		if _, err := loadConfig(); err == nil {
+			t.Fatal("accepted missing config")
+		}
+	})
+	t.Run("invalid environment port", func(t *testing.T) {
+		t.Setenv("AUGUR_SERVER_PORT", "garbage")
+		if _, err := loadConfig(); err == nil {
+			t.Fatal("accepted invalid port")
+		}
+	})
+}
+
+func TestEnvironmentCanClearYAMLValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("bitcoinRpc:\n  password: secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AUGUR_CONFIG_FILE", path)
+	t.Setenv("BITCOIN_RPC_PASSWORD", "")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BitcoinRpc.Password != "" {
+		t.Fatal("empty override did not clear password")
 	}
 }

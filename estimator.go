@@ -2,61 +2,90 @@ package augur
 
 import (
 	"errors"
+	"fmt"
 	"math"
-	"sort"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/lnliz/go-bitcoin-augur/internal"
 )
 
+// MaxBlockTarget is the largest supported horizon: one week at ten minutes per block.
+const MaxBlockTarget = 1008
+
 var (
-	DefaultBlockTargets  = []float64{3, 6, 9, 12, 18, 24, 36, 48, 72, 96, 144}
-	DefaultProbabilities = []float64{0.05, 0.20, 0.50, 0.80, 0.95}
+	defaultBlockTargets  = [...]float64{3, 6, 9, 12, 18, 24, 36, 48, 72, 96, 144}
+	defaultProbabilities = [...]float64{0.05, 0.20, 0.50, 0.80, 0.95}
+	// DefaultBlockTargets lists the default horizons. Changing it does not configure estimators.
+	DefaultBlockTargets = slices.Clone(defaultBlockTargets[:])
+	// DefaultProbabilities lists the default confidence levels. Use WithProbabilities to customize them.
+	DefaultProbabilities = slices.Clone(defaultProbabilities[:])
 )
 
+// FeeEstimator estimates fees from caller-supplied mempool history. Construct one
+// with NewFeeEstimator. It performs no I/O and is safe for concurrent calculations
+// provided callers do not mutate snapshots while they are being read.
 type FeeEstimator struct {
+	estimatorConfig
+	calculator *internal.FeeEstimatesCalculator
+}
+
+type estimatorConfig struct {
 	probabilities           []float64
 	blockTargets            []float64
 	shortTermWindowDuration time.Duration
 	longTermWindowDuration  time.Duration
-	calculator              *internal.FeeEstimatesCalculator
 }
 
-type FeeEstimatorOption func(*FeeEstimator)
+// FeeEstimatorOption configures a new estimator. Options apply only during
+// construction, so they cannot invalidate an existing estimator's cached model.
+type FeeEstimatorOption func(*estimatorConfig)
 
+// WithProbabilities sets confidence levels in [0, 1].
 func WithProbabilities(p []float64) FeeEstimatorOption {
-	return func(fe *FeeEstimator) {
-		fe.probabilities = p
+	return func(fe *estimatorConfig) {
+		fe.probabilities = slices.Clone(p)
 	}
 }
 
+// WithBlockTargets sets whole-number horizons in [1, MaxBlockTarget].
 func WithBlockTargets(bt []float64) FeeEstimatorOption {
-	return func(fe *FeeEstimator) {
-		fe.blockTargets = bt
+	return func(fe *estimatorConfig) {
+		fe.blockTargets = slices.Clone(bt)
 	}
 }
 
+// WithShortTermWindow sets the recent inflow window (default 30 minutes).
 func WithShortTermWindow(d time.Duration) FeeEstimatorOption {
-	return func(fe *FeeEstimator) {
+	return func(fe *estimatorConfig) {
 		fe.shortTermWindowDuration = d
 	}
 }
 
+// WithLongTermWindow sets the historical inflow window (default 24 hours).
 func WithLongTermWindow(d time.Duration) FeeEstimatorOption {
-	return func(fe *FeeEstimator) {
+	return func(fe *estimatorConfig) {
 		fe.longTermWindowDuration = d
 	}
 }
 
+// NewFeeEstimator validates and copies its configuration. Targets must be whole
+// numbers in [1, MaxBlockTarget]; probabilities must be finite and in [0, 1].
+// A probability of zero makes no confirmation claim; one cannot yield an estimate.
+// Repeated targets and probabilities are deduplicated and sorted.
 func NewFeeEstimator(opts ...FeeEstimatorOption) (*FeeEstimator, error) {
-	fe := &FeeEstimator{
-		probabilities:           DefaultProbabilities,
-		blockTargets:            DefaultBlockTargets,
+	fe := &estimatorConfig{
+		probabilities:           slices.Clone(defaultProbabilities[:]),
+		blockTargets:            slices.Clone(defaultBlockTargets[:]),
 		shortTermWindowDuration: 30 * time.Minute,
 		longTermWindowDuration:  24 * time.Hour,
 	}
 
 	for _, opt := range opts {
+		if opt == nil {
+			return nil, errors.New("fee estimator option must not be nil")
+		}
 		opt(fe)
 	}
 
@@ -67,47 +96,91 @@ func NewFeeEstimator(opts ...FeeEstimatorOption) (*FeeEstimator, error) {
 		return nil, errors.New("at least one block target must be provided")
 	}
 	for _, p := range fe.probabilities {
-		if p < 0 || p > 1 {
-			return nil, errors.New("all probabilities must be between 0.0 and 1.0")
+		if math.IsNaN(p) || p < 0 || p > 1 {
+			return nil, fmt.Errorf("probability must be finite and between 0 and 1: %v", p)
 		}
 	}
 	for _, bt := range fe.blockTargets {
-		if bt <= 0 {
-			return nil, errors.New("all block targets must be positive")
+		if err := validateBlockTarget(bt, 1); err != nil {
+			return nil, err
 		}
 	}
 
-	fe.calculator = internal.NewFeeEstimatesCalculator(fe.probabilities, fe.blockTargets)
-	return fe, nil
+	if fe.shortTermWindowDuration <= 0 || fe.longTermWindowDuration < fe.shortTermWindowDuration {
+		return nil, errors.New("windows must satisfy 0 < short-term window <= long-term window")
+	}
+	slices.Sort(fe.probabilities)
+	fe.probabilities = slices.Compact(fe.probabilities)
+	slices.Sort(fe.blockTargets)
+	fe.blockTargets = slices.Compact(fe.blockTargets)
+
+	return &FeeEstimator{
+		estimatorConfig: *fe,
+		calculator:      internal.NewFeeEstimatesCalculator(fe.probabilities, fe.blockTargets),
+	}, nil
 }
 
+func validateBlockTarget(target float64, minimum float64) error {
+	if math.IsNaN(target) || target < minimum || target > MaxBlockTarget || math.Trunc(target) != target {
+		return fmt.Errorf("block target must be a whole number between %g and %d: %v", minimum, MaxBlockTarget, target)
+	}
+	return nil
+}
+
+// CalculateEstimates returns fees for all configured targets. Empty history has
+// no estimates. One snapshot estimates the existing backlog with zero inflow;
+// observations spanning a full long-term window are preferable.
 func (fe *FeeEstimator) CalculateEstimates(snapshots []MempoolSnapshot) (FeeEstimate, error) {
 	return fe.CalculateEstimatesForBlocks(snapshots, nil)
 }
 
+// CalculateEstimatesForBlocks calculates a whole-number target in [3, MaxBlockTarget].
+// A nil target uses the configured targets. Snapshot timestamps must be distinct;
+// inputs may be unordered and are never modified.
 func (fe *FeeEstimator) CalculateEstimatesForBlocks(snapshots []MempoolSnapshot, numOfBlocks *float64) (FeeEstimate, error) {
-	if numOfBlocks != nil && *numOfBlocks < 3.0 {
-		return FeeEstimate{}, errors.New("numOfBlocks must be at least 3 if specified")
+	if fe == nil || fe.calculator == nil {
+		return FeeEstimate{}, errors.New("fee estimator must be constructed with NewFeeEstimator")
+	}
+	if numOfBlocks != nil {
+		if err := validateBlockTarget(*numOfBlocks, 3); err != nil {
+			return FeeEstimate{}, err
+		}
 	}
 
 	if len(snapshots) == 0 {
 		return FeeEstimate{Estimates: make(map[int]BlockTarget), Timestamp: time.Now()}, nil
 	}
 
-	ordered := make([]MempoolSnapshot, len(snapshots))
-	copy(ordered, snapshots)
-	sort.Slice(ordered, func(i, j int) bool {
-		return ordered[i].Timestamp.Before(ordered[j].Timestamp)
-	})
+	for i, snapshot := range snapshots {
+		if err := snapshot.Validate(); err != nil {
+			return FeeEstimate{}, fmt.Errorf("snapshot %d: %w", i, err)
+		}
+	}
+	ordered := slices.Clone(snapshots)
+	slices.SortFunc(ordered, func(a, b MempoolSnapshot) int { return a.Timestamp.Compare(b.Timestamp) })
+	for i := 1; i < len(ordered); i++ {
+		if ordered[i].Timestamp.Equal(ordered[i-1].Timestamp) {
+			return FeeEstimate{}, fmt.Errorf("duplicate snapshot timestamp: %s", ordered[i].Timestamp.Format(time.RFC3339Nano))
+		}
+	}
+	// Older observations cannot contribute to either window. Avoid expanding
+	// their sparse bucket maps into dense simulation arrays.
+	startTime := ordered[len(ordered)-1].Timestamp.Add(-fe.longTermWindowDuration)
+	first := 0
+	for ordered[first].Timestamp.Before(startTime) {
+		first++
+	}
+	ordered = ordered[first:]
 
-	simdSnapshots := make([]internal.MempoolSnapshotBuckets, len(ordered))
+	bucketSnapshots := make([]internal.MempoolSnapshotBuckets, len(ordered))
 	for i, s := range ordered {
-		simdSnapshots[i] = internal.NewMempoolSnapshotBuckets(s.Timestamp, s.BlockHeight, s.BucketedWeights)
+		bucketSnapshots[i] = internal.NewMempoolSnapshotBuckets(s.Timestamp, s.BlockHeight, s.BucketedWeights)
+		bucketSnapshots[i].BlockHash = strings.ToLower(s.BlockHash)
 	}
 
-	latestMempoolWeights := simdSnapshots[len(simdSnapshots)-1].Buckets
-	shortTermInflows := internal.CalculateInflows(simdSnapshots, fe.shortTermWindowDuration)
-	longTermInflows := internal.CalculateInflows(simdSnapshots, fe.longTermWindowDuration)
+	latestMempoolWeights := bucketSnapshots[len(bucketSnapshots)-1].Buckets
+	shortTermInflows := internal.CalculateInflows(bucketSnapshots, fe.shortTermWindowDuration)
+	longTermInflows := internal.CalculateInflows(bucketSnapshots, fe.longTermWindowDuration)
 
 	var calculator *internal.FeeEstimatesCalculator
 	var targets []float64
@@ -142,76 +215,4 @@ func (fe *FeeEstimator) convertToFeeEstimate(feeMatrix [][]*float64, timestamp t
 	}
 
 	return FeeEstimate{Estimates: estimates, Timestamp: timestamp}
-}
-
-type BlockTarget struct {
-	Blocks        int
-	Probabilities map[float64]float64
-}
-
-func (bt BlockTarget) GetFeeRate(probability float64) (float64, bool) {
-	rate, ok := bt.Probabilities[probability]
-	return rate, ok
-}
-
-type FeeEstimate struct {
-	Estimates map[int]BlockTarget
-	Timestamp time.Time
-}
-
-func (fe FeeEstimate) GetFeeRate(targetBlocks int, probability float64) (float64, bool) {
-	target, ok := fe.Estimates[targetBlocks]
-	if !ok {
-		return 0, false
-	}
-	return target.GetFeeRate(probability)
-}
-
-func (fe FeeEstimate) GetEstimatesForTarget(targetBlocks int) (BlockTarget, bool) {
-	target, ok := fe.Estimates[targetBlocks]
-	return target, ok
-}
-
-func (fe FeeEstimate) GetNearestBlockTarget(targetBlocks int) (int, bool) {
-	if len(fe.Estimates) == 0 {
-		return 0, false
-	}
-	if _, ok := fe.Estimates[targetBlocks]; ok {
-		return targetBlocks, true
-	}
-
-	nearest := 0
-	minDiff := math.MaxInt
-	for k := range fe.Estimates {
-		diff := int(math.Abs(float64(k - targetBlocks)))
-		if diff < minDiff {
-			minDiff = diff
-			nearest = k
-		}
-	}
-	return nearest, true
-}
-
-func (fe FeeEstimate) GetAvailableBlockTargets() []int {
-	targets := make([]int, 0, len(fe.Estimates))
-	for k := range fe.Estimates {
-		targets = append(targets, k)
-	}
-	sort.Ints(targets)
-	return targets
-}
-
-func (fe FeeEstimate) GetAvailableConfidenceLevels() []float64 {
-	seen := make(map[float64]bool)
-	for _, bt := range fe.Estimates {
-		for p := range bt.Probabilities {
-			seen[p] = true
-		}
-	}
-	levels := make([]float64, 0, len(seen))
-	for p := range seen {
-		levels = append(levels, p)
-	}
-	sort.Float64s(levels)
-	return levels
 }

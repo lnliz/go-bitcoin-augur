@@ -64,3 +64,26 @@ func TestFromMempoolSnapshotIgnoresVeryLowFeeRates(t *testing.T) {
 		t.Errorf("expected total weight 500, got %f", totalWeight)
 	}
 }
+
+func TestFromMempoolSnapshotPreservesAboveMaximumWeights(t *testing.T) {
+	result := NewMempoolSnapshotBuckets(time.Now(), 100, map[int]int64{
+		BucketMax:     100,
+		BucketMax + 1: 200,
+		math.MaxInt:   300,
+		BucketMin:     400,
+		math.MinInt:   500,
+	})
+	if got := result.Buckets[0]; got != 600 {
+		t.Errorf("highest bucket weight = %v, want 600", got)
+	}
+	if got := result.Buckets[BucketArraySize-1]; got != 400 {
+		t.Errorf("lowest bucket weight = %v, want 400", got)
+	}
+	var total float64
+	for _, weight := range result.Buckets {
+		total += weight
+	}
+	if total != 1000 {
+		t.Errorf("total weight = %v, want 1000", total)
+	}
+}

@@ -176,3 +176,144 @@ func TestCalculateInflowsHandlesMultipleBlockHeights(t *testing.T) {
 		t.Errorf("expected inflows[0] = 3000, got %f", inflows[0])
 	}
 }
+
+func TestCalculateInflowsObservationBoundaries(t *testing.T) {
+	type observation struct {
+		minutes int
+		height  int
+		weight  int64
+	}
+	tests := []struct {
+		name      string
+		samples   []observation
+		timeframe time.Duration
+		want      float64
+	}{
+		{
+			name: "repeated height after reorganization",
+			samples: []observation{
+				{0, 100, 100}, {1, 100, 200},
+				{2, 101, 10}, {3, 101, 110},
+				{4, 100, 5000}, {5, 100, 5100},
+			},
+			timeframe: 10 * time.Minute,
+			want:      1000,
+		},
+		{
+			name: "no inflow across different heights",
+			samples: []observation{
+				{0, 100, 100}, {1, 102, 1000}, {2, 101, 2000},
+			},
+			timeframe: 10 * time.Minute,
+			want:      0,
+		},
+		{
+			name: "equal timestamps give no elapsed observation time",
+			samples: []observation{
+				{0, 100, 100}, {0, 100, 1000},
+			},
+			timeframe: 10 * time.Minute,
+			want:      0,
+		},
+		{
+			name: "zero duration group does not inflate measured group",
+			samples: []observation{
+				{0, 100, 100}, {0, 100, 1000},
+				{1, 101, 100}, {2, 101, 200},
+			},
+			timeframe: 10 * time.Minute,
+			want:      1000,
+		},
+		{
+			name: "window start is inclusive and older observations excluded",
+			samples: []observation{
+				{0, 100, 10000}, {1, 100, 100}, {6, 100, 600},
+			},
+			timeframe: 5 * time.Minute,
+			want:      1000,
+		},
+		{
+			name: "negative growth contributes time but no inflow",
+			samples: []observation{
+				{0, 100, 1000}, {1, 100, 100},
+				{2, 101, 100}, {3, 101, 300},
+			},
+			timeframe: 10 * time.Minute,
+			want:      1000,
+		},
+		{
+			name:      "zero timeframe",
+			samples:   []observation{{0, 100, 100}, {1, 100, 200}},
+			timeframe: 0,
+			want:      0,
+		},
+		{
+			name:      "negative timeframe",
+			samples:   []observation{{0, 100, 100}, {1, 100, 200}},
+			timeframe: -time.Minute,
+			want:      0,
+		},
+	}
+	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			snapshots := make([]MempoolSnapshotBuckets, len(tt.samples))
+			for i, sample := range tt.samples {
+				snapshots[i] = NewMempoolSnapshotBuckets(
+					base.Add(time.Duration(sample.minutes)*time.Minute), sample.height,
+					map[int]int64{BucketMax: sample.weight},
+				)
+			}
+			inflows := CalculateInflows(snapshots, tt.timeframe)
+			if inflows[0] != tt.want {
+				t.Fatalf("inflow = %v, want %v", inflows[0], tt.want)
+			}
+			for i, value := range inflows[1:] {
+				if value != 0 {
+					t.Fatalf("unused bucket %d: got inflow %v, want 0", i+1, value)
+				}
+			}
+		})
+	}
+}
+
+func TestCalculateInflowsSubsecondIntervals(t *testing.T) {
+	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	snapshots := []MempoolSnapshotBuckets{
+		NewMempoolSnapshotBuckets(base, 100, map[int]int64{0: 100}),
+		NewMempoolSnapshotBuckets(base.Add(500*time.Millisecond), 100, map[int]int64{0: 110}),
+	}
+	inflows := CalculateInflows(snapshots, time.Minute)
+	if got := inflows[BucketMax]; got != 12000 {
+		t.Fatalf("inflow = %v, want 12000", got)
+	}
+}
+
+func TestCalculateInflowsUsesOptionalBlockHashes(t *testing.T) {
+	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name   string
+		hashes []string
+		want   float64
+	}{
+		{"same-height replacement splits observations", []string{"a", "a", "b", "b"}, 500},
+		{"empty hashes retain height-only behavior", []string{"", "", "", ""}, 1000},
+		{"unchanged hash retains all observations", []string{"a", "a", "a", "a"}, 1000},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			minutes := []int{0, 1, 2, 5}
+			weights := []int64{100, 200, 500, 600}
+			snapshots := make([]MempoolSnapshotBuckets, len(minutes))
+			for i, minute := range minutes {
+				snapshots[i] = NewMempoolSnapshotBuckets(
+					base.Add(time.Duration(minute)*time.Minute), 100,
+					map[int]int64{0: weights[i]},
+				)
+				snapshots[i].BlockHash = tt.hashes[i]
+			}
+			if got := CalculateInflows(snapshots, 10*time.Minute)[BucketMax]; got != tt.want {
+				t.Fatalf("inflow = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

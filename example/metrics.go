@@ -11,12 +11,12 @@ import (
 )
 
 type FeeMetricsCollector struct {
-	mempoolCollector *MempoolCollector
+	mempoolCollector feeEstimateProvider
 
 	feeRateDesc *prometheus.Desc
 }
 
-func NewFeeMetricsCollector(mempoolCollector *MempoolCollector) *FeeMetricsCollector {
+func NewFeeMetricsCollector(mempoolCollector feeEstimateProvider) *FeeMetricsCollector {
 	return &FeeMetricsCollector{
 		mempoolCollector: mempoolCollector,
 		feeRateDesc: prometheus.NewDesc(
@@ -41,7 +41,7 @@ func (c *FeeMetricsCollector) Collect(ch chan<- prometheus.Metric) {
 	for blocks, target := range estimate.Estimates {
 		blockStr := strconv.Itoa(blocks)
 		for confidence, feeRate := range target.Probabilities {
-			confStr := strconv.FormatFloat(confidence, 'f', 2, 64)
+			confStr := formatProbability(confidence)
 			ch <- prometheus.MustNewConstMetric(
 				c.feeRateDesc,
 				prometheus.GaugeValue,
@@ -83,29 +83,49 @@ func (m *HTTPMetrics) Middleware(next http.Handler) http.Handler {
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
 
-		path := ""
-		status := sw.status
-		if r.URL.Path == "/" || r.URL.Path == "/fees" || r.URL.Path == "/fees.json" {
-			path = r.URL.Path
-		} else {
-			status = 404
-			path = ""
+		// ServeMux patterns group dynamic targets and unknown routes without
+		// inventing statuses or allowing arbitrary paths/methods to create series.
+		path := r.Pattern
+		if path == "" || sw.status == http.StatusNotFound {
+			path = "unmatched"
 		}
-		m.requestDuration.WithLabelValues(path, r.Method, strconv.Itoa(status)).Observe(time.Since(start).Seconds())
+		method := r.Method
+		switch method {
+		case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE":
+		default:
+			method = "other"
+		}
+		m.requestDuration.WithLabelValues(path, method, strconv.Itoa(sw.status)).Observe(time.Since(start).Seconds())
 	})
 }
 
 type statusWriter struct {
 	http.ResponseWriter
-	status int
+	status      int
+	wroteHeader bool
 }
 
 func (w *statusWriter) WriteHeader(code int) {
-	w.status = code
+	if w.wroteHeader {
+		return
+	}
 	w.ResponseWriter.WriteHeader(code)
+	if code >= 200 {
+		w.status = code
+		w.wroteHeader = true
+	}
 }
 
-func SetupMetricsServer(addr string, mempoolCollector *MempoolCollector) (*http.Server, *HTTPMetrics) {
+func (w *statusWriter) Write(data []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func SetupMetricsServer(addr string, mempoolCollector feeEstimateProvider) (*http.Server, *HTTPMetrics) {
 	reg := prometheus.NewRegistry()
 
 	reg.MustRegister(collectors.NewGoCollector())
@@ -118,7 +138,11 @@ func SetupMetricsServer(addr string, mempoolCollector *MempoolCollector) (*http.
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 
 	return &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}, httpMetrics
 }

@@ -2,500 +2,239 @@ package internal
 
 import (
 	"math"
+	"math/rand"
+	"slices"
 	"testing"
-	"time"
 )
 
-func newTestCalculator() *FeeEstimatesCalculator {
-	return NewFeeEstimatesCalculator([]float64{0.5, 0.95}, []float64{3.0, 12.0, 144.0})
+func TestRunSimulationCapacityBoundaries(t *testing.T) {
+	calc := NewFeeEstimatesCalculator([]float64{0.5}, []float64{3})
+	tests := []struct {
+		name     string
+		initial  []float64
+		inflow   []float64
+		blocks   int
+		target   float64
+		capacity float64
+		want     int
+	}{
+		{"no blocks", []float64{0}, []float64{0}, 0, 3, 10, BucketMax + 1},
+		{"empty", []float64{0, 0}, []float64{0, 0}, 3, 3, 10, BucketMin},
+		{"exact capacity", []float64{2, 4}, []float64{2, 6}, 3, 3, 10, BucketMin},
+		{"first bucket remains", []float64{31, 0}, []float64{0, 0}, 3, 3, 10, BucketMax + 1},
+		{"second bucket remains", []float64{10, 21}, []float64{0, 0}, 3, 3, 10, BucketMax},
+		{"third bucket remains", []float64{10, 20, 1}, []float64{0, 0, 0}, 3, 3, 10, BucketMax - 1},
+		{"constant inflow", []float64{4, 4, 4, 4, 4}, []float64{4, 4, 4, 4, 4}, 2, 2, 12, BucketMax - 1},
+		{"fractional duration", []float64{0, 0}, []float64{7, 0}, 1, 1.5, 10, BucketMax + 1},
+		{"overflow is congestion", []float64{math.MaxFloat64}, []float64{math.MaxFloat64}, 3, 3, 10, BucketMax + 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			initial, inflow := slices.Clone(tt.initial), slices.Clone(tt.inflow)
+			got := calc.runSimulation(initial, inflow, tt.blocks, tt.target, tt.capacity)
+			if got != tt.want {
+				t.Fatalf("got bucket %d, want %d", got, tt.want)
+			}
+			if !slices.Equal(initial, tt.initial) || !slices.Equal(inflow, tt.inflow) {
+				t.Fatal("simulation mutated its inputs")
+			}
+		})
+	}
 }
 
-func TestMineBlockRemovesWeightsFromHighestFeeBucketsFirst(t *testing.T) {
-	calc := newTestCalculator()
-	weights := make([]float64, 5)
+func TestRunSimulationMatchesBlockByBlockReference(t *testing.T) {
+	calc := NewFeeEstimatesCalculator([]float64{0.5}, []float64{3})
+	rng := rand.New(rand.NewSource(1))
+	for trial := 0; trial < 5000; trial++ {
+		blocks := 1 + rng.Intn(50)
+		target := float64(1 + rng.Intn(50))
+		capacity := float64(1 + rng.Intn(100_000))
+		initial := make([]float64, 1+rng.Intn(50))
+		inflow := make([]float64, len(initial))
+		for i := range initial {
+			initial[i] = float64(rng.Intn(200_000))
+			// Integer per-block arrivals make exact-capacity comparisons
+			// independent of accumulated floating-point roundoff.
+			inflow[i] = float64(rng.Intn(1000) * blocks)
+		}
+		got := calc.runSimulation(initial, inflow, blocks, target, capacity)
+		want := simulateBlocksReference(initial, inflow, blocks, target, capacity)
+		if got != want {
+			t.Fatalf("trial %d: got %d, want %d (blocks %d, target %g, capacity %g)",
+				trial, got, want, blocks, target, capacity)
+		}
+	}
+}
+
+// Deliberately simulate every block independently of the production formula.
+func simulateBlocksReference(initial, inflow []float64, blocks int, target, capacity float64) int {
+	weights := slices.Clone(initial)
+	for block := 0; block < blocks; block++ {
+		remainingCapacity := capacity
+		for i := range weights {
+			weights[i] += inflow[i] * target / float64(blocks)
+			mined := math.Min(remainingCapacity, weights[i])
+			weights[i] -= mined
+			remainingCapacity -= mined
+		}
+	}
+	for i, weight := range weights {
+		if weight > 0 {
+			return BucketMax - i + 1
+		}
+	}
+	return BucketMin
+}
+
+func TestExpectedBlocksMined(t *testing.T) {
+	calc := NewFeeEstimatesCalculator([]float64{0.5, 0.95}, []float64{3, 12, 144})
+	want := [][]int{{3, 1}, {12, 7}, {144, 125}}
+	for i, row := range calc.expectedBlocksMined {
+		if !slices.Equal(row, want[i]) {
+			t.Errorf("target %g: got %v, want %v", calc.blockTargets[i], row, want[i])
+		}
+	}
+}
+
+func TestWeightedEstimates(t *testing.T) {
+	calc := NewFeeEstimatesCalculator([]float64{0.5}, []float64{3, 12, 144, 288, 1008})
+	short := [][]float64{{1}, {1}, {1}, {1}, {1}}
+	long := [][]float64{{100}, {100}, {100}, {100}, {100}}
+	want := []float64{5.08203125, 16.8125, 100, 100, 100}
+	got := calc.getWeightedEstimates(short, long)
+	for i, row := range got {
+		if math.Abs(row[0]-want[i]) > 1e-12 {
+			t.Errorf("target %g: got %g, want %g", calc.blockTargets[i], row[0], want[i])
+		}
+	}
+}
+
+func TestWeightedEstimatesPreserveMissingProjections(t *testing.T) {
+	calc := NewFeeEstimatesCalculator([]float64{0.5}, []float64{3, 12, 144, 288})
+	short := [][]float64{{BucketMax + 1}, {BucketMin}, {BucketMax + 1}, {BucketMin}}
+	long := [][]float64{{BucketMin}, {BucketMax + 1}, {BucketMin}, {BucketMax + 1}}
+	want := []float64{BucketMax + 1, BucketMax + 1, BucketMin, BucketMax + 1}
+	got := calc.getWeightedEstimates(short, long)
+	for i, row := range got {
+		if row[0] != want[i] {
+			t.Errorf("target %g: got %g, want %g", calc.blockTargets[i], row[0], want[i])
+		}
+	}
+}
+
+func TestWeightedEstimatesPreserveIdenticalBoundaryBuckets(t *testing.T) {
+	for target := 1; target <= 144; target++ {
+		calc := &FeeEstimatesCalculator{blockTargets: []float64{float64(target)}}
+		boundaries := [][]float64{{BucketMin, BucketMax}}
+		got := calc.getWeightedEstimates(boundaries, boundaries)
+		if !slices.Equal(got[0], boundaries[0]) {
+			t.Fatalf("target %d: identical boundaries changed from %v to %v", target, boundaries[0], got[0])
+		}
+	}
+}
+
+func TestFeeEstimatesBoundaries(t *testing.T) {
+	calc := NewFeeEstimatesCalculator([]float64{0, 0.5, 1}, []float64{3})
+	zero := make([]float64, BucketArraySize)
+	for _, tt := range []struct {
+		name  string
+		index int
+		want  float64
+	}{
+		{"empty pool uses floor", -1, math.Exp(float64(BucketMin) / 100)},
+		{"highest valid fee is included", 1, math.Exp(float64(BucketMax) / 100)},
+		{"highest bucket congested", 0, math.Inf(1)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			weights := make([]float64, BucketArraySize)
+			if tt.index >= 0 {
+				weights[tt.index] = 5 * BlockSizeWeightUnits
+			}
+			got := calc.GetFeeEstimates(weights, zero, zero)[0]
+			if got[0] == nil || *got[0] != math.Exp(float64(BucketMin)/100) {
+				t.Errorf("zero confidence must return floor, got %v", got[0])
+			}
+			if got[2] != nil {
+				t.Errorf("certain confirmation is impossible, got %g", *got[2])
+			}
+			if math.IsInf(tt.want, 1) {
+				if got[1] != nil {
+					t.Errorf("congested ceiling must be unavailable, got %g", *got[1])
+				}
+			} else if got[1] == nil || *got[1] != tt.want {
+				t.Errorf("got %v, want %g", got[1], tt.want)
+			}
+		})
+	}
+}
+
+func TestFeeEstimatesDoNotBlendUnavailableProjectionIntoValidRate(t *testing.T) {
+	calc := NewFeeEstimatesCalculator([]float64{0.5}, []float64{3})
+	zero := make([]float64, BucketArraySize)
+	long := make([]float64, BucketArraySize)
+	long[0] = 5_000_000
+	got := calc.GetFeeEstimates(zero, zero, long)
+	if got[0][0] != nil {
+		t.Fatalf("unavailable long-term projection became a valid fee: %g", *got[0][0])
+	}
+}
+
+func TestFeeEstimatesMonotoneAndFinite(t *testing.T) {
+	calc := NewFeeEstimatesCalculator([]float64{0, 0.05, 0.5, 0.95, 1}, []float64{1, 3, 12, 144, 288, 1008})
+	rng := rand.New(rand.NewSource(2))
+	for trial := 0; trial < 100; trial++ {
+		weights := make([]float64, BucketArraySize)
+		short := make([]float64, BucketArraySize)
+		long := make([]float64, BucketArraySize)
+		for i := range weights {
+			weights[i] = rng.Float64() * 1_000_000
+			short[i] = rng.Float64() * 10_000
+			long[i] = rng.Float64() * 10_000
+		}
+		got := calc.GetFeeEstimates(weights, short, long)
+		for i, row := range got {
+			for j, fee := range row {
+				value := feeOrInfinity(fee)
+				if fee != nil && (math.IsNaN(value) || math.IsInf(value, 0) || value < 0.1) {
+					t.Fatalf("invalid fee %g at [%d][%d]", value, i, j)
+				}
+				if i > 0 && value > feeOrInfinity(got[i-1][j]) {
+					t.Fatalf("fee increases with target at [%d][%d]", i, j)
+				}
+				if j > 0 && value < feeOrInfinity(row[j-1]) {
+					t.Fatalf("fee decreases with confidence at [%d][%d]", i, j)
+				}
+			}
+		}
+	}
+}
+
+func feeOrInfinity(fee *float64) float64 {
+	if fee == nil {
+		return math.Inf(1)
+	}
+	return *fee
+}
+
+func TestCalculatorCopiesConfiguration(t *testing.T) {
+	probabilities, targets := []float64{0.5}, []float64{3}
+	calc := NewFeeEstimatesCalculator(probabilities, targets)
+	probabilities[0], targets[0] = 1, 1008
+	if calc.probabilities[0] != 0.5 || calc.blockTargets[0] != 3 {
+		t.Fatal("calculator configuration aliases caller slices")
+	}
+}
+
+func BenchmarkFeeEstimates(b *testing.B) {
+	calc := NewFeeEstimatesCalculator([]float64{0.05, 0.2, 0.5, 0.8, 0.95},
+		[]float64{3, 6, 9, 12, 18, 24, 36, 48, 72, 96, 144})
+	weights, inflows := make([]float64, BucketArraySize), make([]float64, BucketArraySize)
 	for i := range weights {
-		weights[i] = 1000.0
+		weights[i], inflows[i] = 100_000, 1_000
 	}
-	blockSize := 2500.0
-
-	remaining := calc.mineBlock(weights, blockSize)
-
-	if remaining[0] != 0.0 {
-		t.Errorf("expected remaining[0] = 0, got %f", remaining[0])
-	}
-	if remaining[1] != 0.0 {
-		t.Errorf("expected remaining[1] = 0, got %f", remaining[1])
-	}
-	if remaining[2] != 500.0 {
-		t.Errorf("expected remaining[2] = 500, got %f", remaining[2])
-	}
-	if remaining[3] != 1000.0 {
-		t.Errorf("expected remaining[3] = 1000, got %f", remaining[3])
-	}
-	if remaining[4] != 1000.0 {
-		t.Errorf("expected remaining[4] = 1000, got %f", remaining[4])
-	}
-}
-
-func TestFindBestIndexWhenAllWeightsMined(t *testing.T) {
-	calc := newTestCalculator()
-	weights := make([]float64, 5)
-
-	result := calc.findBestIndex(weights)
-
-	if result != BucketMin {
-		t.Errorf("expected BUCKET_MIN (%d), got %d", BucketMin, result)
-	}
-}
-
-func TestFindBestIndexWhenNoWeightsFullyMined(t *testing.T) {
-	calc := newTestCalculator()
-	weights := make([]float64, 5)
-	for i := range weights {
-		weights[i] = 1000.0
-	}
-
-	result := calc.findBestIndex(weights)
-
-	expected := BucketMax + 1
-	if result != expected {
-		t.Errorf("expected %d (BucketMax+1, indicating no valid estimate), got %d", expected, result)
-	}
-}
-
-func TestFindBestIndexWithPartiallyMinedWeights(t *testing.T) {
-	calc := newTestCalculator()
-	weights := []float64{0.0, 0.0, 500.0, 1000.0, 1000.0}
-
-	result := calc.findBestIndex(weights)
-
-	expected := BucketMax - 1
-	if result != expected {
-		t.Errorf("expected %d, got %d", expected, result)
-	}
-}
-
-func TestRunSimulationWithSimpleCase(t *testing.T) {
-	calc := newTestCalculator()
-	initialWeights := make([]float64, 5)
-	addedWeights := make([]float64, 5)
-	for i := range initialWeights {
-		initialWeights[i] = 1000.0
-		addedWeights[i] = 100.0
-	}
-
-	result := calc.runSimulation(initialWeights, addedWeights, 2, 2, 2500.0)
-
-	if result >= BucketMax {
-		t.Errorf("expected result < BUCKET_MAX, got %d", result)
-	}
-}
-
-func TestRunSimulationWithZeroExpectedBlocks(t *testing.T) {
-	calc := newTestCalculator()
-	initialWeights := make([]float64, 5)
-	addedWeights := make([]float64, 5)
-	for i := range initialWeights {
-		initialWeights[i] = 1000.0
-		addedWeights[i] = 100.0
-	}
-
-	result := calc.runSimulation(initialWeights, addedWeights, 0, 2, 2500.0)
-
-	expected := BucketMax + 1
-	if result != expected {
-		t.Errorf("expected %d (BucketMax+1, indicating no valid estimate), got %d", expected, result)
-	}
-}
-
-func TestMineBlockHandlesBlockSizeLargerThanTotalWeights(t *testing.T) {
-	calc := newTestCalculator()
-	weights := make([]float64, 5)
-	for i := range weights {
-		weights[i] = 1000.0
-	}
-	blockSize := 6000.0
-
-	remaining := calc.mineBlock(weights, blockSize)
-
-	for i := range remaining {
-		if remaining[i] != 0.0 {
-			t.Errorf("expected remaining[%d] = 0, got %f", i, remaining[i])
-		}
-	}
-}
-
-func TestMineBlockHandlesBlockSizeSmallerThanAnyWeight(t *testing.T) {
-	calc := newTestCalculator()
-	weights := make([]float64, 5)
-	for i := range weights {
-		weights[i] = 1000.0
-	}
-	blockSize := 500.0
-
-	remaining := calc.mineBlock(weights, blockSize)
-
-	if remaining[0] != 500.0 {
-		t.Errorf("expected remaining[0] = 500, got %f", remaining[0])
-	}
-	for i := 1; i < 5; i++ {
-		if remaining[i] != 1000.0 {
-			t.Errorf("expected remaining[%d] = 1000, got %f", i, remaining[i])
-		}
-	}
-}
-
-func TestFindBestIndexWhenLastBucketIsMined(t *testing.T) {
-	calc := newTestCalculator()
-	weights := []float64{0.0, 1000.0, 1000.0, 1000.0, 1000.0}
-
-	result := calc.findBestIndex(weights)
-
-	if result != BucketMax {
-		t.Errorf("expected BUCKET_MAX (%d), got %d", BucketMax, result)
-	}
-}
-
-func TestRunSimulationWithLargeBlockSize(t *testing.T) {
-	calc := newTestCalculator()
-	initialWeights := make([]float64, 5)
-	addedWeights := make([]float64, 5)
-	for i := range initialWeights {
-		initialWeights[i] = 1000.0
-		addedWeights[i] = 100.0
-	}
-
-	result := calc.runSimulation(initialWeights, addedWeights, 2, 2, 6000.0)
-
-	if result != BucketMin {
-		t.Errorf("expected BUCKET_MIN (%d), got %d", BucketMin, result)
-	}
-}
-
-func TestRunSimulationWithIntermediateMiningCase(t *testing.T) {
-	calc := newTestCalculator()
-	initialWeights := make([]float64, 5)
-	addedWeights := make([]float64, 5)
-	for i := range initialWeights {
-		initialWeights[i] = 4.0
-		addedWeights[i] = 4.0
-	}
-
-	result := calc.runSimulation(initialWeights, addedWeights, 2, 2, 12.0)
-
-	expected := BucketMax - 1
-	if result != expected {
-		t.Errorf("expected %d, got %d", expected, result)
-	}
-}
-
-func TestRunSimulationReturnsMinimumFeeBucketWhenAllBucketsMined(t *testing.T) {
-	calc := newTestCalculator()
-	initialWeights := make([]float64, 5)
-	addedWeights := make([]float64, 5)
-	for i := range initialWeights {
-		initialWeights[i] = 4.0
-		addedWeights[i] = 4.0
-	}
-
-	result := calc.runSimulation(initialWeights, addedWeights, 3, 3, 100.0)
-
-	if result != BucketMin {
-		t.Errorf("expected BUCKET_MIN (%d), got %d", BucketMin, result)
-	}
-}
-
-func TestNearMinimumFeeBucketNeverEmitsSub01SatPerVB(t *testing.T) {
-	calc := newTestCalculator()
-	nearMinimumFeeRate := 0.0998
-	bucketIndex := int(math.Round(math.Log(nearMinimumFeeRate) * 100))
-
-	if bucketIndex != BucketMin {
-		t.Errorf("expected bucket index %d, got %d", BucketMin, bucketIndex)
-	}
-
-	bucketedWeights := map[int]int64{bucketIndex: 4_000_000}
-	snapshot := NewMempoolSnapshotBuckets(time.Now(), 800000, bucketedWeights)
-
-	zeroInflows := make([]float64, BucketArraySize)
-
-	estimates := calc.GetFeeEstimates(snapshot.Buckets, zeroInflows, zeroInflows)
-
-	expectedFeeRate := math.Exp(float64(bucketIndex) / 100.0)
-
-	for blockIdx, row := range estimates {
-		for probIdx, fee := range row {
-			if fee == nil {
-				t.Errorf("estimate[%d][%d] should not be nil", blockIdx, probIdx)
-				continue
-			}
-			if *fee < 0.1 {
-				t.Errorf("estimate[%d][%d] should be >= 0.1 sat/vB, got %f", blockIdx, probIdx, *fee)
-			}
-			if math.Abs(*fee-expectedFeeRate) > 1e-12 {
-				t.Errorf("estimate[%d][%d] should match expected fee rate %f, got %f", blockIdx, probIdx, expectedFeeRate, *fee)
-			}
-		}
-	}
-}
-
-func TestRunSimulationReturnsInvalidIndexWhenNoBucketsFullyMined(t *testing.T) {
-	calc := newTestCalculator()
-	initialWeights := make([]float64, 5)
-	addedWeights := make([]float64, 5)
-	for i := range initialWeights {
-		initialWeights[i] = 4.0
-		addedWeights[i] = 4.0
-	}
-
-	result := calc.runSimulation(initialWeights, addedWeights, 3, 3, 1.0)
-
-	expected := BucketMax + 1
-	if result != expected {
-		t.Errorf("expected %d (BucketMax+1, indicating no valid estimate), got %d", expected, result)
-	}
-}
-
-func TestGetExpectedBlocksMinedReturnsValidBlocks(t *testing.T) {
-	calc := newTestCalculator()
-	result := calc.getExpectedBlocksMined()
-
-	expected := [][]float64{
-		{3.0, 1.0},
-		{12.0, 7.0},
-		{144.0, 125.0},
-	}
-
-	for i := range expected {
-		for j := range expected[i] {
-			if result[i][j] != expected[i][j] {
-				t.Errorf("expected[%d][%d] = %f, got %f", i, j, expected[i][j], result[i][j])
-			}
-		}
-	}
-}
-
-func TestGetWeightedEstimatesReturns144BlockEstimateEqualsLongEstimate(t *testing.T) {
-	calc := newTestCalculator()
-
-	shortEstimates := make([][]float64, 3)
-	longEstimates := make([][]float64, 3)
-	for i := range shortEstimates {
-		shortEstimates[i] = []float64{1.0, 1.0}
-		longEstimates[i] = []float64{100.0, 100.0}
-	}
-
-	result := calc.getWeightedEstimates(shortEstimates, longEstimates)
-
-	expected := [][]float64{
-		{5.082031250000005, 5.082031250000005},
-		{16.81250000000001, 16.81250000000001},
-		{100.0, 100.0},
-	}
-
-	for i := range expected {
-		for j := range expected[i] {
-			if math.Abs(result[i][j]-expected[i][j]) > 1e-10 {
-				t.Errorf("result[%d][%d] = %f, expected %f", i, j, result[i][j], expected[i][j])
-			}
-		}
-	}
-}
-
-func TestGetWeightedEstimatesReturnsSameWhenAllEstimatesAreEqual(t *testing.T) {
-	calc := newTestCalculator()
-
-	shortEstimates := make([][]float64, 3)
-	longEstimates := make([][]float64, 3)
-	for i := range shortEstimates {
-		shortEstimates[i] = []float64{100.0, 100.0}
-		longEstimates[i] = []float64{100.0, 100.0}
-	}
-
-	result := calc.getWeightedEstimates(shortEstimates, longEstimates)
-
-	for i := range result {
-		for j := range result[i] {
-			if result[i][j] != 100.0 {
-				t.Errorf("result[%d][%d] = %f, expected 100.0", i, j, result[i][j])
-			}
-		}
-	}
-}
-
-func TestGetFeeEstimatesReturnsNilWhenNoBucketsFullyMined(t *testing.T) {
-	calc := NewFeeEstimatesCalculator([]float64{0.5, 0.95}, []float64{3.0})
-
-	hugeWeights := make([]float64, BucketArraySize)
-	for i := range hugeWeights {
-		hugeWeights[i] = 100_000_000_000.0
-	}
-
-	zeroInflows := make([]float64, BucketArraySize)
-
-	estimates := calc.GetFeeEstimates(hugeWeights, zeroInflows, zeroInflows)
-
-	for blockIdx, row := range estimates {
-		for probIdx, fee := range row {
-			if fee != nil {
-				t.Errorf("estimate[%d][%d] should be nil when no buckets fully mined, got %f", blockIdx, probIdx, *fee)
-			}
-		}
-	}
-}
-
-type testTx struct {
-	weight int64
-	fee    int64
-}
-
-func (t testTx) FeeRate() float64 {
-	return float64(t.fee) * 4.0 / float64(t.weight)
-}
-
-func (t testTx) GetWeight() int64 {
-	return t.weight
-}
-
-func TestCreateFeeRateBucketsSingleTransaction(t *testing.T) {
-	tx := testTx{weight: 400, fee: 200}
-	buckets := CreateFeeRateBuckets([]testTx{tx})
-
-	expectedBucketIndex := int(math.Round(math.Log(2.0) * 100))
-
-	if _, ok := buckets[expectedBucketIndex]; !ok {
-		t.Errorf("expected bucket %d to exist", expectedBucketIndex)
-	}
-	if buckets[expectedBucketIndex] != 400 {
-		t.Errorf("expected weight 400, got %d", buckets[expectedBucketIndex])
-	}
-}
-
-func TestCreateFeeRateBucketsMultipleTransactionsSameBucket(t *testing.T) {
-	tx1 := testTx{weight: 400, fee: 200}
-	tx2 := testTx{weight: 800, fee: 400}
-	buckets := CreateFeeRateBuckets([]testTx{tx1, tx2})
-
-	expectedBucketIndex := int(math.Round(math.Log(2.0) * 100))
-
-	if len(buckets) != 1 {
-		t.Errorf("expected 1 bucket, got %d", len(buckets))
-	}
-	if buckets[expectedBucketIndex] != 1200 {
-		t.Errorf("expected weight 1200, got %d", buckets[expectedBucketIndex])
-	}
-}
-
-func TestCreateFeeRateBucketsTransactionsDifferentBuckets(t *testing.T) {
-	tx1 := testTx{weight: 400, fee: 200}
-	tx2 := testTx{weight: 400, fee: 400}
-	buckets := CreateFeeRateBuckets([]testTx{tx1, tx2})
-
-	if len(buckets) != 2 {
-		t.Errorf("expected 2 buckets, got %d", len(buckets))
-	}
-	for _, weight := range buckets {
-		if weight != 400 {
-			t.Errorf("expected weight 400, got %d", weight)
-		}
-	}
-}
-
-func TestCreateFeeRateBucketsExponentialFeeRates(t *testing.T) {
-	transactions := []testTx{
-		{weight: 400, fee: 100},
-		{weight: 400, fee: 272},
-		{weight: 400, fee: 739},
-		{weight: 400, fee: 2009},
-	}
-	buckets := CreateFeeRateBuckets(transactions)
-
-	expectedBuckets := map[int]int64{
-		0:   400,
-		100: 400,
-		200: 400,
-		300: 400,
-	}
-
-	if len(buckets) != len(expectedBuckets) {
-		t.Errorf("expected %d buckets, got %d", len(expectedBuckets), len(buckets))
-	}
-	for k, v := range expectedBuckets {
-		if buckets[k] != v {
-			t.Errorf("bucket %d: expected %d, got %d", k, v, buckets[k])
-		}
-	}
-}
-
-func TestCreateFeeRateBucketsDuplicateFeeRates(t *testing.T) {
-	transactions := []testTx{
-		{weight: 400, fee: 100},
-		{weight: 400, fee: 100},
-		{weight: 400, fee: 272},
-		{weight: 400, fee: 272},
-	}
-	buckets := CreateFeeRateBuckets(transactions)
-
-	expectedBuckets := map[int]int64{
-		0:   800,
-		100: 800,
-	}
-
-	if len(buckets) != len(expectedBuckets) {
-		t.Errorf("expected %d buckets, got %d", len(expectedBuckets), len(buckets))
-	}
-	for k, v := range expectedBuckets {
-		if buckets[k] != v {
-			t.Errorf("bucket %d: expected %d, got %d", k, v, buckets[k])
-		}
-	}
-}
-
-func TestCreateFeeRateBucketsVeryHighFeeRates(t *testing.T) {
-	transactions := []testTx{
-		{weight: 400, fee: 1_000_000_000},
-	}
-	buckets := CreateFeeRateBuckets(transactions)
-
-	if _, ok := buckets[BucketMax]; !ok {
-		t.Error("expected bucket at BUCKET_MAX to exist")
-	}
-	if buckets[BucketMax] != 400 {
-		t.Errorf("expected weight 400, got %d", buckets[BucketMax])
-	}
-}
-
-func TestCreateFeeRateBucketsVeryLowFeeRates(t *testing.T) {
-	transactions := []testTx{
-		{weight: 400, fee: 10},
-		{weight: 400, fee: 20},
-		{weight: 400, fee: 100},
-	}
-	buckets := CreateFeeRateBuckets(transactions)
-
-	bucket01 := int(math.Round(math.Log(0.1) * 100))
-	bucket02 := int(math.Round(math.Log(0.2) * 100))
-	bucket1 := 0
-
-	if len(buckets) != 3 {
-		t.Errorf("expected 3 buckets, got %d", len(buckets))
-	}
-	if _, ok := buckets[bucket01]; !ok {
-		t.Errorf("expected bucket %d to exist", bucket01)
-	}
-	if _, ok := buckets[bucket02]; !ok {
-		t.Errorf("expected bucket %d to exist", bucket02)
-	}
-	if _, ok := buckets[bucket1]; !ok {
-		t.Errorf("expected bucket %d to exist", bucket1)
-	}
-	if buckets[bucket01] != 400 {
-		t.Errorf("expected weight 400, got %d", buckets[bucket01])
-	}
-	if buckets[bucket02] != 400 {
-		t.Errorf("expected weight 400, got %d", buckets[bucket02])
-	}
-	if buckets[bucket1] != 400 {
-		t.Errorf("expected weight 400, got %d", buckets[bucket1])
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		calc.GetFeeEstimates(weights, inflows, inflows)
 	}
 }

@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,14 +36,8 @@ func (m *mockCollector) GetLatestFeeEstimateForBlockTarget(numBlocks float64) (*
 	return m.latestEstimate, nil
 }
 
-type collectorInterface interface {
-	GetLatestFeeEstimate() *augur.FeeEstimate
-	GetFeeEstimateForTimestamp(int64) (*augur.FeeEstimate, error)
-	GetLatestFeeEstimateForBlockTarget(float64) (*augur.FeeEstimate, error)
-}
-
 func TestHandleFeesNoEstimate(t *testing.T) {
-	collector := &MempoolCollector{}
+	collector := &mockCollector{}
 	handler := NewHandler(collector, "")
 
 	req := httptest.NewRequest("GET", "/fees", nil)
@@ -55,7 +51,7 @@ func TestHandleFeesNoEstimate(t *testing.T) {
 }
 
 func TestHandleFeesWithEstimate(t *testing.T) {
-	collector := &MempoolCollector{}
+	collector := &mockCollector{}
 	estimate := &augur.FeeEstimate{
 		Timestamp: time.Date(2025, 3, 11, 12, 0, 0, 0, time.UTC),
 		Estimates: map[int]augur.BlockTarget{
@@ -68,7 +64,7 @@ func TestHandleFeesWithEstimate(t *testing.T) {
 			},
 		},
 	}
-	collector.latestFeeEstimate.Store(estimate)
+	collector.latestEstimate = estimate
 
 	handler := NewHandler(collector, "")
 
@@ -105,7 +101,7 @@ func TestHandleFeesWithEstimate(t *testing.T) {
 }
 
 func TestHandleHistoricalFeeMissingTimestamp(t *testing.T) {
-	collector := &MempoolCollector{}
+	collector := &mockCollector{}
 	handler := NewHandler(collector, "")
 
 	req := httptest.NewRequest("GET", "/historical_fee", nil)
@@ -119,7 +115,7 @@ func TestHandleHistoricalFeeMissingTimestamp(t *testing.T) {
 }
 
 func TestHandleHistoricalFeeInvalidTimestamp(t *testing.T) {
-	collector := &MempoolCollector{}
+	collector := &mockCollector{}
 	handler := NewHandler(collector, "")
 
 	req := httptest.NewRequest("GET", "/historical_fee?timestamp=notanumber", nil)
@@ -133,7 +129,7 @@ func TestHandleHistoricalFeeInvalidTimestamp(t *testing.T) {
 }
 
 func TestHandleFeesTargetInvalidPath(t *testing.T) {
-	collector := &MempoolCollector{}
+	collector := &mockCollector{}
 	handler := NewHandler(collector, "")
 
 	req := httptest.NewRequest("GET", "/fees/target/invalid", nil)
@@ -195,5 +191,87 @@ func TestRoundTo4Decimals(t *testing.T) {
 		if result != tc.expected {
 			t.Errorf("roundTo4Decimals(%f) = %f, expected %f", tc.input, result, tc.expected)
 		}
+	}
+}
+
+func TestTargetRejectsInvalidNumbers(t *testing.T) {
+	h := NewHandler(&mockCollector{}, "")
+	for _, target := range []string{"NaN", "+Inf", "-Inf", "-1", "0", "2", "3.5", "1009", "1e100"} {
+		t.Run(target, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			h.handleFeesTarget(w, httptest.NewRequest("GET", "/fees/target/"+target, nil))
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("got status %d", w.Code)
+			}
+		})
+	}
+}
+
+func TestNoCustomEstimateReturnsUnavailable(t *testing.T) {
+	w := httptest.NewRecorder()
+	NewHandler(&mockCollector{}, "").handleFeesTarget(w, httptest.NewRequest("GET", "/fees/target/3", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("got status %d", w.Code)
+	}
+}
+
+func TestHistoricalRejectsOutOfRangeTimestamps(t *testing.T) {
+	for _, timestamp := range []string{"-1", "9223372036854775807"} {
+		w := httptest.NewRecorder()
+		NewHandler(&mockCollector{}, "").handleHistoricalFee(w, httptest.NewRequest("GET", "/historical_fee?timestamp="+timestamp, nil))
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("timestamp=%s status=%d", timestamp, w.Code)
+		}
+	}
+}
+
+func TestRoutesRejectOtherMethods(t *testing.T) {
+	mux := http.NewServeMux()
+	NewHandler(&mockCollector{}, "").RegisterRoutes(mux)
+	for _, path := range []string{"/", "/fees", "/fees.json", "/fees/target/3", "/historical_fee"} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest("POST", path, nil))
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("path=%s status=%d", path, w.Code)
+		}
+	}
+}
+
+func TestIndexUsesAndEscapesBaseURL(t *testing.T) {
+	for _, base := range []string{"/augur", "https://example.com/augur", `https://example.com/</script><script>alert(1)</script>`} {
+		w := httptest.NewRecorder()
+		NewHandler(&mockCollector{}, base).handleIndex(w, httptest.NewRequest("GET", "/", nil))
+		body := w.Body.String()
+		if w.Code != http.StatusOK || strings.Contains(body, `</script><script>alert(1)</script>`) {
+			t.Fatalf("unsafe or failed template: %s", body)
+		}
+		if !strings.Contains(body, `const BASE = "`+strings.ReplaceAll(base, "<", `\u003c`)) && base == "/augur" {
+			t.Fatal("base URL missing from JavaScript")
+		}
+		if base == "/augur" && !strings.Contains(body, `href="/augur/fees.json"`) {
+			t.Fatal("base URL missing from link")
+		}
+	}
+}
+
+func TestJSONEncodingErrorReturns500(t *testing.T) {
+	w := httptest.NewRecorder()
+	w.Header().Set("Cache-Control", "public, max-age=15")
+	writeJSON(w, map[string]float64{"fee": math.NaN()})
+	if w.Code != http.StatusInternalServerError || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("status=%d headers=%v", w.Code, w.Header())
+	}
+}
+
+func TestProbabilityFormattingPreservesDistinctConfidences(t *testing.T) {
+	estimate := &augur.FeeEstimate{Estimates: map[int]augur.BlockTarget{3: {Probabilities: map[float64]float64{0: 1, 0.5: 2, 0.95: 3, 0.951: 4, 0.954: 5, 1: 6}}}}
+	probabilities := transformFeeEstimate(estimate).Estimates["3"].Probabilities
+	for key, want := range map[string]float64{"0.00": 1, "0.50": 2, "0.95": 3, "0.951": 4, "0.954": 5, "1.00": 6} {
+		if probabilities[key].FeeRate != want {
+			t.Errorf("confidence %s: got %v want %v", key, probabilities[key], want)
+		}
+	}
+	if len(probabilities) != 6 {
+		t.Fatalf("lost confidence: %v", probabilities)
 	}
 }

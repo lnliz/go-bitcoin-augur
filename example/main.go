@@ -1,71 +1,84 @@
 package main
 
 import (
-	"fmt"
+	"context"
+	"errors"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
+	"time"
 
 	augur "github.com/lnliz/go-bitcoin-augur"
 )
 
 func main() {
-	log.Println("Starting Augur Reference application")
+	if err := run(); err != nil {
+		log.Print(err)
+		os.Exit(1)
+	}
+}
 
-	cfg := loadConfig()
-
-	bitcoinClient := NewBitcoinRpcClient(cfg.BitcoinRpc)
-	persist := NewMempoolPersistence(cfg.Persistence)
-
-	feeEstimator, err := augur.NewFeeEstimator()
+func run() error {
+	cfg, err := loadConfig()
 	if err != nil {
-		log.Fatalf("Error creating fee estimator: %v", err)
+		return err
 	}
-
-	mempoolCollector := NewMempoolCollector(bitcoinClient, persist, feeEstimator)
-
-	metricsServer, httpMetrics := SetupMetricsServer(cfg.MetricsAddr, mempoolCollector)
-
-	handler := NewHandler(mempoolCollector, cfg.BaseURL)
+	persist, err := NewMempoolPersistence(cfg.Persistence)
+	if err != nil {
+		return err
+	}
+	estimator, err := augur.NewFeeEstimator()
+	if err != nil {
+		return err
+	}
+	collector := NewMempoolCollector(NewBitcoinRpcClient(cfg.BitcoinRpc), persist, estimator)
+	metricsServer, metrics := SetupMetricsServer(cfg.MetricsAddr, collector)
 	mux := http.NewServeMux()
-	handler.RegisterRoutes(mux)
-
-	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+	NewHandler(collector, cfg.BaseURL).RegisterRoutes(mux)
 	server := &http.Server{
-		Addr:    addr,
-		Handler: httpMetrics.Middleware(mux),
+		Addr:              net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port)),
+		Handler:           metrics.Middleware(mux),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
-
-	go func() {
-		log.Printf("Starting HTTP server on %s", addr)
-		log.Printf("HTTP server started at http://%s/", addr)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP server error: %v", err)
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	metricsListener, err := net.Listen("tcp", metricsServer.Addr)
+	if err != nil {
+		return err
+	}
+	defer metricsListener.Close()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	failures := make(chan error, 2)
+	go func() { failures <- server.Serve(listener) }()
+	go func() { failures <- metricsServer.Serve(metricsListener) }()
+	log.Printf("Serving HTTP on %s and metrics on %s", server.Addr, metricsServer.Addr)
+	collector.Start()
+	select {
+	case <-ctx.Done():
+	case err = <-failures:
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
 		}
-	}()
-
-	go func() {
-		log.Printf("Starting metrics server on %s", cfg.MetricsAddr)
-		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Metrics server error: %v", err)
+	}
+	collector.Stop()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, srv := range []*http.Server{server, metricsServer} {
+		if shutdownErr := srv.Shutdown(shutdownCtx); shutdownErr != nil {
+			srv.Close()
+			err = errors.Join(err, shutdownErr)
 		}
-	}()
-
-	mempoolCollector.Start()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-
-	log.Println("Shutting down application")
-	mempoolCollector.Stop()
-	if err := server.Close(); err != nil {
-		log.Printf("Error closing HTTP server: %v", err)
 	}
-	if err := metricsServer.Close(); err != nil {
-		log.Printf("Error closing metrics server: %v", err)
-	}
-	log.Println("Application shutdown completed")
+	return err
 }
