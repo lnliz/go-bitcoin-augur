@@ -3,10 +3,9 @@ package internal
 import (
 	"math"
 	"testing"
-	"time"
 )
 
-func TestFromMempoolSnapshotDropsBucketsBelowMinimum(t *testing.T) {
+func TestFillBucketWeightsDropsBucketsBelowMinimum(t *testing.T) {
 	lowBucket := BucketMin - 1
 	validBucket := BucketMin
 
@@ -15,31 +14,25 @@ func TestFromMempoolSnapshotDropsBucketsBelowMinimum(t *testing.T) {
 		validBucket: 600,
 	}
 
-	result := NewMempoolSnapshotBuckets(time.Now(), 100, bucketedWeights)
-
-	if len(result.Buckets) != BucketArraySize {
-		t.Errorf("expected %d buckets, got %d", BucketArraySize, len(result.Buckets))
-	}
+	var result [BucketArraySize]int64
+	FillBucketWeights(&result, bucketedWeights)
 
 	validIndex := BucketMax - validBucket
-	if result.Buckets[validIndex] != 600.0 {
-		t.Errorf("expected bucket[%d] = 600, got %d", validIndex, result.Buckets[validIndex])
+	if result[validIndex] != 600.0 {
+		t.Errorf("expected bucket[%d] = 600, got %d", validIndex, result[validIndex])
 	}
 
 	var totalWeight int64
-	for _, w := range result.Buckets {
+	for _, w := range result {
 		totalWeight += w
 	}
 	if totalWeight != 600.0 {
 		t.Errorf("expected total weight 600, got %d", totalWeight)
 	}
 
-	if validIndex != len(result.Buckets)-1 {
-		t.Errorf("expected validIndex to be last index")
-	}
 }
 
-func TestFromMempoolSnapshotIgnoresVeryLowFeeRates(t *testing.T) {
+func TestFillBucketWeightsIgnoresVeryLowFeeRates(t *testing.T) {
 	veryLowFeeRate := 0.05
 	veryLowBucket := int(math.Round(math.Log(veryLowFeeRate) * 100))
 
@@ -54,10 +47,11 @@ func TestFromMempoolSnapshotIgnoresVeryLowFeeRates(t *testing.T) {
 		validBucket:   500,
 	}
 
-	result := NewMempoolSnapshotBuckets(time.Now(), 100, bucketedWeights)
+	var result [BucketArraySize]int64
+	FillBucketWeights(&result, bucketedWeights)
 
 	var totalWeight int64
-	for _, w := range result.Buckets {
+	for _, w := range result {
 		totalWeight += w
 	}
 	if totalWeight != 500.0 {
@@ -65,22 +59,23 @@ func TestFromMempoolSnapshotIgnoresVeryLowFeeRates(t *testing.T) {
 	}
 }
 
-func TestFromMempoolSnapshotPreservesAboveMaximumWeights(t *testing.T) {
-	result := NewMempoolSnapshotBuckets(time.Now(), 100, map[int]int64{
+func TestFillBucketWeightsPreservesAboveMaximumWeights(t *testing.T) {
+	var result [BucketArraySize]int64
+	FillBucketWeights(&result, map[int]int64{
 		BucketMax:     100,
 		BucketMax + 1: 200,
 		math.MaxInt:   300,
 		BucketMin:     400,
 		math.MinInt:   500,
 	})
-	if got := result.Buckets[0]; got != 600 {
+	if got := result[0]; got != 600 {
 		t.Errorf("highest bucket weight = %v, want 600", got)
 	}
-	if got := result.Buckets[BucketArraySize-1]; got != 400 {
+	if got := result[BucketArraySize-1]; got != 400 {
 		t.Errorf("lowest bucket weight = %v, want 400", got)
 	}
 	var total int64
-	for _, weight := range result.Buckets {
+	for _, weight := range result {
 		total += weight
 	}
 	if total != 1000 {
@@ -88,17 +83,33 @@ func TestFromMempoolSnapshotPreservesAboveMaximumWeights(t *testing.T) {
 	}
 }
 
-func TestFromMempoolSnapshotFoldsIntegerWeightsExactly(t *testing.T) {
+func TestFillBucketWeightsFoldsIntegerWeightsExactly(t *testing.T) {
 	weights := map[int]int64{
 		BucketMax:     1 << 53,
 		BucketMax + 1: 1,
 		math.MaxInt:   math.MaxInt64 - (1 << 53) - 1,
 	}
 	// Map traversal order must not affect folded totals near int64's limit.
+	var result [BucketArraySize]int64
 	for range 100 {
-		result := NewMempoolSnapshotBuckets(time.Now(), 100, weights)
-		if got := result.Buckets[0]; got != math.MaxInt64 {
+		FillBucketWeights(&result, weights)
+		if got := result[0]; got != math.MaxInt64 {
 			t.Fatalf("highest bucket weight = %d, want %d", got, int64(math.MaxInt64))
+		}
+	}
+}
+
+func TestFillBucketWeightsClearsReusedBuffer(t *testing.T) {
+	var result [BucketArraySize]int64
+	FillBucketWeights(&result, map[int]int64{BucketMax: 100, BucketMin: 200})
+	FillBucketWeights(&result, map[int]int64{0: 300})
+	if result[0] != 0 || result[BucketArraySize-1] != 0 || result[BucketMax] != 300 {
+		t.Fatal("reused buffer retained weights from the previous snapshot")
+	}
+	FillBucketWeights(&result, nil)
+	for _, weight := range result {
+		if weight != 0 {
+			t.Fatal("empty snapshot retained previous weights")
 		}
 	}
 }

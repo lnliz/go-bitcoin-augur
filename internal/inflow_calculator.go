@@ -19,6 +19,9 @@ func CalculateInflows(snapshots []MempoolSnapshotBuckets, timeframe time.Duratio
 	}
 	snapshots = snapshots[firstRelevant:]
 
+	// Only run endpoints contribute. Reuse local buffers instead of expanding
+	// every historical snapshot; concurrent calculations have separate buffers.
+	var firstWeights, lastWeights [BucketArraySize]int64
 	var totalSeconds float64
 	for start := 0; start < len(snapshots); {
 		end := start + 1
@@ -35,11 +38,13 @@ func CalculateInflows(snapshots []MempoolSnapshotBuckets, timeframe time.Duratio
 		seconds := last.Timestamp.Sub(first.Timestamp).Seconds()
 		if seconds > 0 {
 			totalSeconds += seconds
+			FillBucketWeights(&firstWeights, first.BucketedWeights)
+			FillBucketWeights(&lastWeights, last.BucketedWeights)
 			for i := range inflows {
 				// Nonnegative int64 endpoints have an exact, representable
 				// difference. Subtract before converting so small changes in
 				// large snapshots are not rounded away.
-				if delta := last.Buckets[i] - first.Buckets[i]; delta > 0 {
+				if delta := lastWeights[i] - firstWeights[i]; delta > 0 {
 					inflows[i] += float64(delta)
 				}
 			}
