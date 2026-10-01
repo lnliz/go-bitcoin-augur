@@ -164,8 +164,7 @@ func (fe *FeeEstimator) CalculateEstimatesForBlocks(snapshots []MempoolSnapshot,
 			return FeeEstimate{}, fmt.Errorf("duplicate snapshot timestamp: %s", ordered[i].Timestamp.Format(time.RFC3339Nano))
 		}
 	}
-	// Older observations cannot contribute to either window. Avoid expanding
-	// their sparse bucket maps into dense simulation arrays.
+	// Older observations cannot contribute to either window.
 	startTime := ordered[len(ordered)-1].Timestamp.Add(-fe.longTermWindowDuration)
 	first := 0
 	for ordered[first].Timestamp.Before(startTime) {
@@ -179,7 +178,8 @@ func (fe *FeeEstimator) CalculateEstimatesForBlocks(snapshots []MempoolSnapshot,
 		bucketSnapshots[i].BlockHash = strings.ToLower(s.BlockHash)
 	}
 
-	latest := bucketSnapshots[len(bucketSnapshots)-1].Buckets
+	var latest [internal.BucketArraySize]int64
+	internal.FillBucketWeights(&latest, bucketSnapshots[len(bucketSnapshots)-1].BucketedWeights)
 	latestMempoolWeights := make([]float64, len(latest))
 	for i, weight := range latest {
 		latestMempoolWeights[i] = float64(weight)

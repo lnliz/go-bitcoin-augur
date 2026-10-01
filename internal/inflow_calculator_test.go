@@ -6,6 +6,16 @@ import (
 	"time"
 )
 
+func inflowSnapshotFromDense(timestamp time.Time, height int, buckets []int64) MempoolSnapshotBuckets {
+	weights := make(map[int]int64)
+	for i, weight := range buckets {
+		if weight != 0 {
+			weights[BucketMax-i] = weight
+		}
+	}
+	return NewMempoolSnapshotBuckets(timestamp, height, weights)
+}
+
 func TestCalculateInflowsWithEmptySnapshotList(t *testing.T) {
 	inflows := CalculateInflows(nil, 10*time.Minute)
 
@@ -32,8 +42,8 @@ func TestCalculateInflowsWithSingleBlockSnapshots(t *testing.T) {
 	}
 
 	snapshots := []MempoolSnapshotBuckets{
-		{Timestamp: now, BlockHeight: 100, Buckets: buckets1},
-		{Timestamp: now.Add(5 * time.Minute), BlockHeight: 100, Buckets: buckets2},
+		inflowSnapshotFromDense(now, 100, buckets1),
+		inflowSnapshotFromDense(now.Add(5*time.Minute), 100, buckets2),
 	}
 
 	inflows := CalculateInflows(snapshots, 10*time.Minute)
@@ -59,9 +69,9 @@ func TestCalculateInflowsWithConsistentInflowRate(t *testing.T) {
 	}
 
 	snapshots := []MempoolSnapshotBuckets{
-		{Timestamp: now, BlockHeight: 100, Buckets: buckets1},
-		{Timestamp: now.Add(5 * time.Minute), BlockHeight: 100, Buckets: buckets2},
-		{Timestamp: now.Add(10 * time.Minute), BlockHeight: 100, Buckets: buckets3},
+		inflowSnapshotFromDense(now, 100, buckets1),
+		inflowSnapshotFromDense(now.Add(5*time.Minute), 100, buckets2),
+		inflowSnapshotFromDense(now.Add(10*time.Minute), 100, buckets3),
 	}
 
 	inflows := CalculateInflows(snapshots, 10*time.Minute)
@@ -90,8 +100,8 @@ func TestCalculateInflowsWithDifferentRatesPerBucket(t *testing.T) {
 	buckets2[2] = 6_000_000.0
 
 	snapshots := []MempoolSnapshotBuckets{
-		{Timestamp: now, BlockHeight: 100, Buckets: buckets1},
-		{Timestamp: now.Add(5 * time.Minute), BlockHeight: 100, Buckets: buckets2},
+		inflowSnapshotFromDense(now, 100, buckets1),
+		inflowSnapshotFromDense(now.Add(5*time.Minute), 100, buckets2),
 	}
 
 	inflows := CalculateInflows(snapshots, 10*time.Minute)
@@ -126,9 +136,9 @@ func TestCalculateInflowsConsidersOnlyFirstAndLastSnapshotPerBlockHeight(t *test
 	}
 
 	snapshots := []MempoolSnapshotBuckets{
-		{Timestamp: now, BlockHeight: 100, Buckets: buckets1},
-		{Timestamp: now.Add(100 * time.Second), BlockHeight: 100, Buckets: buckets2},
-		{Timestamp: now.Add(5 * time.Minute), BlockHeight: 100, Buckets: buckets3},
+		inflowSnapshotFromDense(now, 100, buckets1),
+		inflowSnapshotFromDense(now.Add(100*time.Second), 100, buckets2),
+		inflowSnapshotFromDense(now.Add(5*time.Minute), 100, buckets3),
 	}
 
 	inflows := CalculateInflows(snapshots, 10*time.Minute)
@@ -160,12 +170,12 @@ func TestCalculateInflowsHandlesMultipleBlockHeights(t *testing.T) {
 	}
 
 	snapshots := []MempoolSnapshotBuckets{
-		{Timestamp: now, BlockHeight: 100, Buckets: b1},
-		{Timestamp: now.Add(100 * time.Second), BlockHeight: 100, Buckets: b2},
-		{Timestamp: now.Add(200 * time.Second), BlockHeight: 100, Buckets: b3},
-		{Timestamp: now.Add(300 * time.Second), BlockHeight: 101, Buckets: b4},
-		{Timestamp: now.Add(400 * time.Second), BlockHeight: 101, Buckets: b5},
-		{Timestamp: now.Add(500 * time.Second), BlockHeight: 101, Buckets: b6},
+		inflowSnapshotFromDense(now, 100, b1),
+		inflowSnapshotFromDense(now.Add(100*time.Second), 100, b2),
+		inflowSnapshotFromDense(now.Add(200*time.Second), 100, b3),
+		inflowSnapshotFromDense(now.Add(300*time.Second), 101, b4),
+		inflowSnapshotFromDense(now.Add(400*time.Second), 101, b5),
+		inflowSnapshotFromDense(now.Add(500*time.Second), 101, b6),
 	}
 
 	inflows := CalculateInflows(snapshots, 10*time.Minute)
@@ -301,7 +311,7 @@ func TestCalculateInflowsPreservesSmallIntegerChanges(t *testing.T) {
 			t.Errorf("initial weight %d: inflow = %v, want 10", initial, got)
 		}
 		// Declines near the signed integer limit must remain zero inflow.
-		snapshots[1].Buckets[BucketMax] = 0
+		snapshots[1].BucketedWeights[0] = 0
 		if got := CalculateInflows(snapshots, 10*time.Minute)[BucketMax]; got != 0 {
 			t.Errorf("initial weight %d: decreasing inflow = %v, want 0", initial, got)
 		}
