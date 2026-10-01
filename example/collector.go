@@ -35,6 +35,8 @@ type MempoolCollector struct {
 	feeEstimator       *augur.FeeEstimator
 	collectionInterval time.Duration
 	latest             atomic.Pointer[collectedEstimates]
+	history            []augur.MempoolSnapshot
+	historyEnd         time.Time
 	lifecycle          sync.Mutex
 	cancel             context.CancelFunc
 	done               chan struct{}
@@ -50,6 +52,8 @@ func (c *MempoolCollector) Start() {
 	if c.cancel != nil {
 		return
 	}
+	c.history = nil
+	c.historyEnd = time.Time{}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
 	c.done = make(chan struct{})
@@ -146,15 +150,42 @@ func (c *MempoolCollector) updateFeeEstimates(ctx context.Context) error {
 		return fmt.Errorf("create snapshot: %w", err)
 	}
 	snapshot.BlockHash = observation.BlockHash
+	// Persisted timestamps have no monotonic clock component. Keep cached
+	// observations comparable in the same way as observations read from disk.
+	snapshot.Timestamp = snapshot.Timestamp.Round(0)
 	if err := c.persistence.SaveSnapshot(snapshot); err != nil {
 		return fmt.Errorf("save snapshot: %w", err)
 	}
-	snapshots, err := c.persistence.GetSnapshots(snapshot.Timestamp.Add(-24*time.Hour), snapshot.Timestamp)
-	if err != nil {
-		return fmt.Errorf("read snapshots: %w", err)
+	start := snapshot.Timestamp.Add(-24 * time.Hour)
+	var snapshots []augur.MempoolSnapshot
+	if c.history == nil || !snapshot.Timestamp.After(c.historyEnd) || c.history[len(c.history)-1].Timestamp.Before(c.historyEnd) {
+		// Reload through clock recovery, including its first forward poll, so
+		// previously saved future observations reenter the window.
+		c.history = nil
+		snapshots, err = c.persistence.GetSnapshots(start, snapshot.Timestamp)
+		if err != nil {
+			return fmt.Errorf("read snapshots: %w", err)
+		}
+	} else {
+		first := 0
+		for first < len(c.history) && c.history[first].Timestamp.Before(start) {
+			first++
+		}
+		retained := c.history[first:]
+		// Published slices are immutable; only their read-only bucket maps
+		// can be shared with the next window.
+		snapshots = make([]augur.MempoolSnapshot, len(retained)+1)
+		copy(snapshots, retained)
+		snapshots[len(retained)] = snapshot
 	}
 	if len(snapshots) == 0 {
 		return fmt.Errorf("saved snapshot was not returned by storage")
+	}
+	// Keep persisted observations even if estimation fails, so the next poll
+	// uses the same history that a fresh disk read would return.
+	c.history = snapshots
+	if snapshot.Timestamp.After(c.historyEnd) {
+		c.historyEnd = snapshot.Timestamp
 	}
 	estimate, err := c.feeEstimator.CalculateEstimates(snapshots)
 	if err != nil {

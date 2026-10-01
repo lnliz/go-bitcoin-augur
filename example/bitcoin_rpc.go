@@ -69,7 +69,7 @@ type mempoolEntry struct {
 	} `json:"fees"`
 }
 
-func (c *BitcoinRpcClient) call(ctx context.Context, method string, params []any, result any) error {
+func callRPC[T any](c *BitcoinRpcClient, ctx context.Context, method string, params []any, result *T) error {
 	body, err := json.Marshal(rpcRequest{JSONRPC: "1.0", ID: method, Method: method, Params: params})
 	if err != nil {
 		return fmt.Errorf("encode %s request: %w", method, err)
@@ -90,7 +90,7 @@ func (c *BitcoinRpcClient) call(ctx context.Context, method string, params []any
 	}
 	var envelope struct {
 		ID     string          `json:"id"`
-		Result json.RawMessage `json:"result"`
+		Result *T              `json:"result"`
 		Error  json.RawMessage `json:"error"`
 	}
 	decoder := json.NewDecoder(resp.Body)
@@ -106,18 +106,16 @@ func (c *BitcoinRpcClient) call(ctx context.Context, method string, params []any
 	if len(envelope.Error) > 0 && !bytes.Equal(envelope.Error, []byte("null")) {
 		return fmt.Errorf("%s RPC error: %s", method, envelope.Error)
 	}
-	if len(envelope.Result) == 0 || bytes.Equal(envelope.Result, []byte("null")) {
+	if envelope.Result == nil {
 		return fmt.Errorf("%s: missing result", method)
 	}
-	if err := json.Unmarshal(envelope.Result, result); err != nil {
-		return fmt.Errorf("decode %s result: %w", method, err)
-	}
+	*result = *envelope.Result
 	return nil
 }
 
 func (c *BitcoinRpcClient) getTip(ctx context.Context) (blockchainInfoResult, error) {
 	var tip blockchainInfoResult
-	if err := c.call(ctx, "getblockchaininfo", []any{}, &tip); err != nil {
+	if err := callRPC(c, ctx, "getblockchaininfo", []any{}, &tip); err != nil {
 		return tip, err
 	}
 	if tip.Blocks == nil || *tip.Blocks < 0 || tip.BestBlockHash == "" {
@@ -143,7 +141,7 @@ func (c *BitcoinRpcClient) GetMempool(ctx context.Context) (mempoolObservation, 
 		return mempoolObservation{}, err
 	}
 	var entries map[string]mempoolEntry
-	if err := c.call(ctx, "getrawmempool", []any{true}, &entries); err != nil {
+	if err := callRPC(c, ctx, "getrawmempool", []any{true}, &entries); err != nil {
 		return mempoolObservation{}, err
 	}
 	after, err := c.getTip(ctx)
